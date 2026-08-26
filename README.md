@@ -76,36 +76,67 @@ Puedes apuntar a cualquier directorio de payload sin modificar este repositorio:
 
 ---
 
-## 📡 ¿Dónde se configura la Red y la WiFi?
+## 📡 Configuración de Red y WiFi para el Usuario Final
 
-Tienes **3 niveles** de configuración:
+El appliance está diseñado para que cualquier persona pueda configurar la red de forma inmediata sin necesidad de conectar teclado, pantalla ni cables Ethernet a la Raspberry Pi.
 
-### Nivel 1: En tiempo de construcción (Ficheros de Configuración)
-Copia `app-payload/config/wifi.env.example` a `app-payload/config/wifi.env`:
-```bash
-WIFI_SSID="MiRedWiFi"
-WIFI_PASS="ClaveWiFi123"
-STATIC_IP="192.168.1.50"
-STATIC_GATEWAY="192.168.1.1"
+```
+                                              ┌──► 1. Archivo wifi.txt en la MicroSD (FAT32) [Recomendado]
+                                              │
+Usuario descarga imagen genérica .img.gz ────┼──► 2. Hotspot WiFi de Rescate (Desde el móvil) [Fallback]
+                                              │
+                                              └──► 3. En tiempo de build (CI/CD o CLI)
 ```
 
-### Nivel 2: En tiempo de compilación (Flags CLI)
-Pásalo directamente como argumentos a `./build.sh --wifi-ssid "..." --wifi-pass "..." --ip "..."`.
+### 🟢 1. Modo *Headless Drop-in* en Tarjeta MicroSD (Recomendado)
+Es el método más rápido y universal (funciona en Windows, macOS y Linux sin software extra):
 
-### Nivel 3: En caliente desde la tarjeta SD (Modo *Headless Drop-in*)
-Una vez grabada la MicroSD, puedes meterla en cualquier PC (Windows/Mac/Linux) y crear en la raíz de la partición de arranque (FAT32):
-* **`wifi.txt`**:
-  ```ini
-  SSID=NuevaRedWiFi
-  PASS=NuevaClave
+1. **Flashear**: Graba la imagen `.img.gz` en tu MicroSD con **Raspberry Pi Imager** o **Balena Etcher**.
+2. **Reinsertar en el PC**: Al terminar, saca y vuelve a meter la tarjeta en tu ordenador. Se montará la partición de arranque `P2PT_BOOT` (FAT32).
+3. **Crear archivo `wifi.txt`**: Crea un archivo de texto llamado `wifi.txt` en la raíz de la tarjeta:
+   ```ini
+   SSID=MiRedWiFiDeCasa
+   PASS=MiPasswordSuperSegura
+   ```
+4. *(Opcional)* Si deseas IP estática en lugar de DHCP, crea también `ip.txt`:
+   ```ini
+   IP=192.168.1.99
+   NETMASK=255.255.255.0
+   GATEWAY=192.168.1.1
+   ```
+5. **Arrancar**: Expulsa la tarjeta, métela en la Raspberry Pi y conéctala a la corriente. El servicio `appliance-setup` detectará los archivos en el primer segundo de arranque, aplicará la configuración a `wpa_supplicant` y se conectará automáticamente.
+
+---
+
+### 🔵 2. Modo *Hotspot WiFi de Rescate* (Fallback Automático)
+Si la Raspberry Pi arranca y **no detecta ninguna red configurada** (o el router ha cambiado):
+
+1. El sistema conmuta automáticamente a modo **Punto de Acceso Temporal** creando una red WiFi abierta llamada:
+   ```
+   P2PT-Setup (o <Appliance>-Setup)
+   ```
+2. Te conectas a esa red desde tu teléfono móvil o portátil.
+3. Se abrirá automáticamente el portal de bienvenida en `http://192.168.4.1/` (o accediendo desde el navegador).
+4. Selecciona tu red WiFi doméstica de la lista, introduce la contraseña y pulsa **"Guardar y Conectar"**.
+5. El appliance guarda las credenciales en el overlay inmutable (`lbu commit`), desactiva el hotspot y se conecta a tu red doméstica.
+
+---
+
+### ⚙️ 3. Configuración en Tiempo de Construcción (CI/CD / CLI)
+Si estás generando una imagen para tu propio uso y quieres que ya venga preconfigurada de fábrica:
+
+* **Vía CLI**:
+  ```bash
+  ./build.sh --wifi-ssid "MiRouter" --wifi-pass "Clave123" --ip "192.168.1.100"
   ```
-* **`ip.txt`**:
-  ```ini
-  IP=192.168.1.99
-  NETMASK=255.255.255.0
-  GATEWAY=192.168.1.1
+* **Vía Receta Declarativa (`appliance.yaml`)**:
+  ```yaml
+  network:
+    ip: "192.168.1.50"
+    gateway: "192.168.1.1"
   ```
-*Al encender la Raspberry Pi, el servicio `appliance-setup` detectará estos archivos y aplicará la configuración al vuelo.*
+* **Vía Archivo Local (`app-payload/config/wifi.env`)**:
+  Copia `wifi.env.example` a `wifi.env` (ignorado por Git por seguridad).
 
 ---
 

@@ -63,7 +63,18 @@ Permitir a los usuarios configurar credenciales WiFi y red estática de forma as
 
 ---
 
-## 3. 📦 Nuevas Placas y Arquitecturas
+## 3. 📶 Modo Hotspot WiFi de Rescate (Captive Portal)
+
+### Objetivo
+Si la Raspberry Pi arranca y no consigue asociarse a ninguna red WiFi tras 25 segundos, conmutar temporalmente a modo AP (`hostapd` / `dnsmasq`) sirviendo una página web mínima para elegir red WiFi y guardar con `lbu commit`.
+
+- [ ] Script fallback en `appliance-setup` para timeout de conexión WiFi
+- [ ] Mini servidor web de aprovisionamiento en Go/C
+- [ ] Persistencia automática en el apkovl (`lbu commit`)
+
+---
+
+## 4. 📦 Nuevas Placas y Arquitecturas
 
 - [ ] Añadir perfiles de kernel/dtb para **Raspberry Pi 4 / Pi 5 (ARM64 / aarch64)**
 - [ ] Añadir perfil para **x86_64 UEFI** (Appliance en Mini PC / Servidores locales)
