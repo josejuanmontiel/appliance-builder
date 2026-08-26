@@ -1,0 +1,6 @@
+# ==============================================================================
+# Configuración del servicio OpenRC para P2PT Server (/etc/conf.d/p2pt)
+# ==============================================================================
+
+# Argumentos pasados al binario p2pt-server
+P2PT_OPTS="-port 9000 -turn-port 3478 -upnp"

@@ -1,0 +1,23 @@
+# Archivos y directorios temporales de construcción
+work/
+output/
+cache/
+
+# Binarios y assets compilados (deben generarse en tiempo de build o CI/CD)
+app-payload/bin/*
+!app-payload/bin/.gitkeep
+
+app-payload/www/*
+!app-payload/www/.gitkeep
+
+# Secretos y credenciales sensibles (WiFi, IPs locales, claves privadas)
+app-payload/config/wifi.env
+wifi.txt
+ip.txt
+config.local.env
+config.runtime.env
+*.env.local
+*.env.*.local
+*.secret
+*.key
+*.csr

@@ -1,0 +1,62 @@
+#!/sbin/openrc-run
+
+description="Generic Appliance First Boot & Storage Setup"
+
+depend() {
+    need net
+    after wpa_supplicant networking dhcpcd
+    keyword -lxc -docker
+}
+
+start() {
+    ebegin "Initializing Appliance Storage and Base Services"
+
+    # 1. Montar partición de datos persistente (/dev/mmcblk0p2)
+    DATA_ROOT="/mnt/data"
+    mkdir -p "$DATA_ROOT"
+
+    if [ -b "/dev/mmcblk0p2" ]; then
+        if ! blkid "/dev/mmcblk0p2" 2>/dev/null | grep -q "ext4"; then
+            einfo "Formateando /dev/mmcblk0p2 como ext4..."
+            mkfs.ext4 -F -L "DATA" /dev/mmcblk0p2 >/dev/null 2>&1 || true
+        fi
+        if ! mountpoint -q "$DATA_ROOT"; then
+            mount /dev/mmcblk0p2 "$DATA_ROOT" 2>/dev/null || true
+        fi
+    fi
+
+    mkdir -p "$DATA_ROOT/config" "$DATA_ROOT/data" "$DATA_ROOT/logs"
+
+    # 2. Sincronización NTP y descarga de paquetes adicionales en primer arranque
+    EXTRA_APKS="/etc/appliance/extra-apks.txt"
+    [ ! -f "$EXTRA_APKS" ] && EXTRA_APKS="/workspace/app-payload/config/extra-apks.txt"
+
+    NEED_PKGS=""
+    if [ -f "$EXTRA_APKS" ]; then
+        for pkg in $(grep -v '^#' "$EXTRA_APKS" | grep -v '^$' || true); do
+            command -v "$pkg" >/dev/null 2>&1 || NEED_PKGS="$NEED_PKGS $pkg"
+        done
+    fi
+
+    einfo "Esperando conectividad de red para sincronización horaria..."
+    retry=0
+    while ! ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1 && [ $retry -lt 15 ]; do
+        retry=$((retry + 1))
+        sleep 2
+    done
+
+    if ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1; then
+        einfo "Red activa. Sincronizando reloj via NTP..."
+        ntpd -d -n -q -p pool.ntp.org >/dev/null 2>&1 || true
+
+        if [ -n "$NEED_PKGS" ]; then
+            einfo "Instalando paquetes adicionales: ${NEED_PKGS}..."
+            apk update --quiet 2>/dev/null || apk update
+            apk add $NEED_PKGS 2>/dev/null || true
+        fi
+    else
+        ewarn "Sin conexión a Internet tras 30s. Continuando arranque."
+    fi
+
+    eend 0
+}
