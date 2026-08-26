@@ -2,7 +2,7 @@
 set -e
 
 # ==============================================================================
-# Alpine Appliance Builder — Orquestador Principal
+# Alpine Appliance Builder — Orquestador Declarativo y Modular
 # ==============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -10,6 +10,7 @@ WORK_DIR="${SCRIPT_DIR}/work"
 OUTPUT_DIR="${SCRIPT_DIR}/output"
 CACHE_DIR="${SCRIPT_DIR}/cache"
 PAYLOAD_DIR="${SCRIPT_DIR}/app-payload"
+CUSTOM_APKS_DIR="${WORK_DIR}/custom-apks"
 
 CONFIG_FILE="${SCRIPT_DIR}/config.default.env"
 PAYLOAD_CONFIG="${PAYLOAD_DIR}/config/wifi.env"
@@ -18,12 +19,24 @@ PAYLOAD_CONFIG="${PAYLOAD_DIR}/config/wifi.env"
 [ -f "$CONFIG_FILE" ] && source "$CONFIG_FILE"
 [ -f "$PAYLOAD_CONFIG" ] && source "$PAYLOAD_CONFIG"
 
+mkdir -p "${WORK_DIR}" "${OUTPUT_DIR}" "${CACHE_DIR}" "${CUSTOM_APKS_DIR}"
+
 # Parsear argumentos de línea de comandos
 REBUILD_BUILDER=false
 RUN_IN_DOCKER=true
+RECIPE_FILE=""
+CLI_APKS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --recipe)
+            RECIPE_FILE="$(readlink -f "$2")"
+            shift 2
+            ;;
+        --apk)
+            CLI_APKS+=("$2")
+            shift 2
+            ;;
         --payload)
             PAYLOAD_DIR="$(readlink -f "$2")"
             shift 2
@@ -67,8 +80,10 @@ while [[ $# -gt 0 ]]; do
         --help|-h)
             echo "Uso: $0 [opciones]"
             echo ""
-            echo "Opciones del Payload:"
-            echo "  --payload <DIR>           Directorio del payload personalizado (def: ./app-payload)"
+            echo "Opciones Declarativas y de Paquetes:"
+            echo "  --recipe <RECIPE.yaml>    Construir a partir de una receta declarativa"
+            echo "  --apk <RUTA_O_URL>        Inyectar un paquete APK (puede repetirse)"
+            echo "  --payload <DIR>           Directorio de payload personalizado (def: ./app-payload)"
             echo ""
             echo "Opciones de Red y Acceso:"
             echo "  --wifi-ssid <SSID>        Nombre de la red WiFi (def: '${WIFI_SSID}')"
@@ -92,20 +107,81 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [ ! -d "$PAYLOAD_DIR" ]; then
-    echo "ERROR: Directorio de payload no encontrado: ${PAYLOAD_DIR}" >&2
-    exit 1
+# Si se pasó una receta declarativa YAML, procesarla
+if [ -n "$RECIPE_FILE" ] && [ -f "$RECIPE_FILE" ]; then
+    echo ">> Procesando receta declarativa: ${RECIPE_FILE}..."
+    
+    python3 - <<EOF
+import yaml, os, urllib.request, shutil
+
+with open("${RECIPE_FILE}", "r") as f:
+    recipe = yaml.safe_load(f) or {}
+
+app = recipe.get("appliance", {})
+pkgs = recipe.get("packages", {})
+net = recipe.get("network", {})
+
+# Escribir variables de entorno de la receta
+env_lines = []
+if "name" in app: env_lines.append(f'APPLIANCE_NAME="{app["name"]}"')
+if "board" in app: env_lines.append(f'TARGET_BOARD="{app["board"]}"')
+if "hostname" in app: env_lines.append(f'HOSTNAME="{app["hostname"]}"')
+if "boot_label" in app: env_lines.append(f'BOOT_LABEL="{app["boot_label"]}"')
+if "ip" in net: env_lines.append(f'STATIC_IP="{net["ip"]}"')
+if "netmask" in net: env_lines.append(f'STATIC_NETMASK="{net["netmask"]}"')
+if "gateway" in net: env_lines.append(f'STATIC_GATEWAY="{net["gateway"]}"')
+if "dns" in net: env_lines.append(f'STATIC_DNS="{net["dns"]}"')
+
+with open("${WORK_DIR}/recipe.env", "w") as f:
+    f.write("\n".join(env_lines) + "\n")
+
+# Escribir paquetes alpine adicionales
+alpine_pkgs = pkgs.get("alpine", [])
+if alpine_pkgs:
+    with open("${WORK_DIR}/extra-apks.txt", "w") as f:
+        f.write("\n".join(alpine_pkgs) + "\n")
+
+# Procesar paquetes APK (locales o URLs)
+apk_list = pkgs.get("apks", [])
+for item in apk_list:
+    item = item.strip()
+    if not item: continue
+    if item.startswith("http://") or item.startswith("https://"):
+        filename = os.path.basename(item.split("?")[0])
+        dest = os.path.join("${CUSTOM_APKS_DIR}", filename)
+        print(f"  Descargando APK: {item} -> {filename}")
+        urllib.request.urlretrieve(item, dest)
+    else:
+        if os.path.isfile(item):
+            print(f"  Copiando APK local: {item}")
+            shutil.copy(item, "${CUSTOM_APKS_DIR}")
+        else:
+            print(f"  AVISO: Archivo APK local no encontrado: {item}")
+EOF
+
+    [ -f "${WORK_DIR}/recipe.env" ] && source "${WORK_DIR}/recipe.env"
 fi
 
+# Procesar APKs pasados por CLI
+for apk in "${CLI_APKS[@]}"; do
+    if [[ "$apk" =~ ^https?:// ]]; then
+        fname=$(basename "${apk%%\?*}")
+        echo "  Descargando APK CLI: $apk -> $fname"
+        curl -fSL -o "${CUSTOM_APKS_DIR}/$fname" "$apk"
+    elif [ -f "$apk" ]; then
+        echo "  Copiando APK CLI: $apk"
+        cp "$apk" "${CUSTOM_APKS_DIR}/"
+    fi
+done
+
 echo "============================================================"
-echo "  Alpine Appliance Builder                                  "
+echo "  Alpine Appliance Builder (Motor Declarativo)              "
 echo "  Appliance: ${APPLIANCE_NAME} | Target: ${TARGET_BOARD}"
-echo "  Payload:   ${PAYLOAD_DIR}"
+echo "  APKs custom detectados: $(ls "${CUSTOM_APKS_DIR}"/*.apk 2>/dev/null | wc -l)"
 echo "============================================================"
 
 # Crear archivo de configuración runtime
 RUNTIME_ENV="${WORK_DIR}/config.runtime.env"
-mkdir -p "${WORK_DIR}" "${OUTPUT_DIR}" "${CACHE_DIR}"
 
 cat <<EOF > "${RUNTIME_ENV}"
 ALPINE_VERSION="${ALPINE_VERSION}"

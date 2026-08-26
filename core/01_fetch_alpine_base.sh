@@ -38,8 +38,9 @@ rm -rf "${BOOTFS}"
 mkdir -p "${BOOTFS}"
 tar -xzf "${CACHE_DIR}/${BASE_TARBALL}" -C "${BOOTFS}"
 
-# Descargar paquetes adicionales requeridos por el payload si están definidos
-EXTRA_APKS_FILE="${PAYLOAD_DIR}/config/extra-apks.txt"
+# Descargar paquetes adicionales requeridos por el payload / receta
+EXTRA_APKS_FILE="${WORKDIR}/extra-apks.txt"
+[ ! -f "$EXTRA_APKS_FILE" ] && EXTRA_APKS_FILE="${PAYLOAD_DIR}/config/extra-apks.txt"
 if [ -f "$EXTRA_APKS_FILE" ]; then
     EXTRA_PKGS=$(grep -v '^#' "$EXTRA_APKS_FILE" | grep -v '^$' | tr '\n' ' ' || true)
     if [ -n "$EXTRA_PKGS" ]; then

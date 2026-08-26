@@ -162,24 +162,52 @@ if [ -d "${PAYLOAD_DIR}/bin" ] && [ "$(ls -A "${PAYLOAD_DIR}/bin" 2>/dev/null)" 
 fi
 
 # 8b. Inyectar assets web desde app-payload/www/ a /var/www/
-if [ -d "${PAYLOAD_DIR}/www" ] && [ "$(ls -A "${PAYLOAD_DIR}/www" 2>/dev/null)" ]; then
-    echo "  Inyectando assets web en /var/www/..."
+if [ -d "${PAYLOAD_DIR}/www" ]; then
     for item in "${PAYLOAD_DIR}/www/"*; do
+        [ -e "$item" ] || continue
         if [ "$(basename "$item")" != ".gitkeep" ]; then
+            echo "  Inyectando asset web: $(basename "$item")"
             cp -r "$item" "$TMP/var/www/"
         fi
     done
 fi
 
 # 8c. Inyectar configuraciones personalizadas desde app-payload/etc/
-if [ -d "${PAYLOAD_DIR}/etc" ] && [ "$(ls -A "${PAYLOAD_DIR}/etc" 2>/dev/null)" ]; then
-    echo "  Inyectando configuraciones en /etc/..."
+if [ -d "${PAYLOAD_DIR}/etc" ]; then
     for item in "${PAYLOAD_DIR}/etc/"*; do
+        [ -e "$item" ] || continue
         if [ "$(basename "$item")" != ".gitkeep" ]; then
+            echo "  Inyectando config: $(basename "$item")"
             cp -r "$item" "$TMP/etc/"
         fi
     done
 fi
+
+# 8d. Desempaquetar paquetes APK personalizados desde work/custom-apks/
+CUSTOM_APKS_DIR="${WORKDIR}/custom-apks"
+if [ -d "$CUSTOM_APKS_DIR" ] && [ "$(ls -A "$CUSTOM_APKS_DIR" 2>/dev/null)" ]; then
+    echo "  Desempaquetando paquetes APK personalizados en apkovl:"
+    for apk in "$CUSTOM_APKS_DIR"/*.apk; do
+        if [ -f "$apk" ]; then
+            echo "    -> $(basename "$apk")"
+            tar -xzf "$apk" -C "$TMP" --exclude='.PKGINFO' --exclude='.SIGN.*' 2>/dev/null || tar -xzf "$apk" -C "$TMP"
+        fi
+    done
+fi
+
+# 8e. Auto-habilitar servicios OpenRC de la aplicación en el runlevel default
+for svc in "$TMP"/etc/init.d/*; do
+    [ -f "$svc" ] || continue
+    svc_name=$(basename "$svc")
+    case "$svc_name" in
+        appliance-setup|networking|wpa_supplicant|modloop|hwdrivers|devfs|dmesg|mdev|bootmisc|hostname|syslog|swap)
+            ;;
+        *)
+            chmod 755 "$svc" 2>/dev/null || true
+            ln -sf "/etc/init.d/${svc_name}" "$TMP/etc/runlevels/default/${svc_name}" 2>/dev/null || true
+            ;;
+    esac
+done
 
 # 9. Runlevels de Alpine: sysinit (CRÍTICO - sin esto modloop no arranca)
 for svc in devfs dmesg mdev; do

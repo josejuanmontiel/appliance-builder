@@ -109,45 +109,87 @@ Una vez grabada la MicroSD, puedes meterla en cualquier PC (Windows/Mac/Linux) y
 
 ---
 
-## 🐹 Guía: Cómo compilar e inyectar tu propio aplicativo
+## 📦 Enfoque Declarativo: Recetas `appliance.yaml` y Paquetes APK
 
-Cualquier aplicación compilada estáticamente puede convertirse en un appliance inmutable en 4 pasos:
+En lugar de copiar binarios manualmente, puedes definir un appliance de forma puramente declarativa mediante una receta YAML y paquetes `.apk` (generados con herramientas estándar como `nfpm` o paquetes oficiales de Alpine):
 
-### 1. Compilación estática cruzada (Ejemplo Go)
-```bash
-# Para Raspberry Pi Zero / Zero W (ARMv6 de 32 bits):
-CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=6 go build -ldflags="-s -w" -o app-payload/bin/mi-app ./cmd/server
+### 1. Definir la Receta (`appliance.yaml`)
+```yaml
+appliance:
+  name: "mi-nodo"
+  board: "rpi-zero" # rpi-zero | rpi-3 | rpi-4 | generic-x86_64
+  hostname: "mi-nodo"
 
-# Para Raspberry Pi 2 / 3 / 4 (ARMv7 32 bits):
-CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -ldflags="-s -w" -o app-payload/bin/mi-app ./cmd/server
+packages:
+  # Paquetes oficiales de Alpine Linux:
+  alpine:
+    - ca-certificates
+    - curl
+    - caddy
 
-# Para Raspberry Pi 3 / 4 / 5 (ARM64 64 bits):
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o app-payload/bin/mi-app ./cmd/server
+  # Paquetes APK propios (rutas locales o URLs https:// de GitHub Releases):
+  apks:
+    - ./dist/mi-app_1.0.0_armhf.apk
+    # - https://github.com/usuario/repo/releases/download/v1.0.0/mi-app_armhf.apk
+
+services:
+  # Servicios OpenRC a habilitar automáticamente:
+  enable:
+    - mi-app
+    - caddy
+
+network:
+  ip: "192.168.1.50"
+  gateway: "192.168.1.1"
 ```
 
-### 2. Crear el script de servicio OpenRC (`app-payload/services/mi-app`)
+### 2. Construir la Imagen desde la Receta
 ```bash
-#!/sbin/openrc-run
-description="Mi Aplicación Daemon"
-
-command="/usr/bin/mi-app"
-command_args="${MI_APP_OPTS:---port 8080}"
-command_user="root"
-command_background="yes"
-pidfile="/run/mi-app.pid"
-
-depend() {
-    need net
-    after wpa_supplicant networking appliance-setup
-}
+./build.sh --recipe appliance.yaml
 ```
 
-### 3. Paquetes del sistema opcionales (`app-payload/config/extra-apks.txt`)
-Añade los paquetes de Alpine que requieras (ej. `ca-certificates`, `curl`, `sqlite`).
+---
 
-### 4. Construir la imagen
-```bash
-./build.sh --name "mi-app"
+## 🤖 GitHub Action Reutilizable (CI/CD para cualquier proyecto)
+
+Cualquier repositorio externo puede generar imágenes de appliance automáticamente en sus GitHub Actions usando este builder:
+
+```yaml
+# .github/workflows/build-appliance.yml en tu propio repositorio
+name: Build Appliance Image
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1. Compila tu binario y empaqueta el APK con nfpm (o GoReleaser)
+      - name: Build APK package
+        run: |
+          go build -o dist/mi-app .
+          nfpm pkg --packager apk --target dist/mi-app_armhf.apk
+
+      # 2. Genera la imagen del Appliance usando esta Action
+      - name: Generate Alpine Appliance SD Image
+        uses: josejuanmontiel/appliance-builder@v1
+        with:
+          recipe: appliance.yaml
+          apk: dist/mi-app_armhf.apk
+          name: mi-appliance
+
+      # 3. Publica los artefactos .img.gz y .tar.gz en tu Release
+      - name: Upload SD Image to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            output/*.img.gz
+            output/*.tar.gz
 ```
 
 ---
@@ -163,3 +205,4 @@ Al terminar `./build.sh`, obtendrás en la carpeta `output/`:
 ## 🧠 Base de Conocimiento y Post-Mortem
 
 Consulta [AGENT.md](AGENT.md) para detalles sobre los 9 errores críticos resueltos durante el diseño de la arquitectura (modloop SquashFS firmado, compatibilidad `mtools`, runlevels OpenRC y clock skew en Pi Zero).
+

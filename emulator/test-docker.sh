@@ -72,17 +72,9 @@ docker exec "$CONTAINER_NAME" /bin/bash -c "
 
 echo ">> Iniciando servicios OpenRC del payload..."
 docker exec "$CONTAINER_NAME" /bin/bash -c "
-    for svc in /etc/init.d/*; do
-        svc_name=\$(basename \"\$svc\")
-        case \"\$svc_name\" in
-            appliance-setup|networking|wpa_supplicant|modloop|hwdrivers|devfs|dmesg|mdev|bootmisc|hostname|syslog|swap)
-                ;;
-            *)
-                echo \"Iniciando \$svc_name...\"
-                \"\$svc\" start 2>/dev/null || true
-                ;;
-        esac
-    done
+    if [ -f /etc/init.d/p2pt ]; then
+        /etc/init.d/p2pt start || /usr/bin/p2pt-server &
+    fi
 "
 
 echo ">> Esperando 5 segundos para inicialización de servicios..."

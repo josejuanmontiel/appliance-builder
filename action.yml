@@ -1,0 +1,94 @@
+name: "Alpine Appliance Builder"
+description: "Build immutable live/diskless Alpine Linux SD images (.img.gz and .tar.gz) for Raspberry Pi from APKs or declarative recipes."
+author: "Jose Juan Montiel"
+
+branding:
+  icon: "hard-drive"
+  color: "blue"
+
+inputs:
+  recipe:
+    description: "Path to declarative appliance recipe file (e.g. appliance.yaml)"
+    required: false
+    default: ""
+  apk:
+    description: "Path or URL to a custom .apk package to inject"
+    required: false
+    default: ""
+  name:
+    description: "Appliance name prefix for generated image"
+    required: false
+    default: ""
+  board:
+    description: "Target board (rpi-zero | rpi-3 | rpi-4 | generic-x86_64)"
+    required: false
+    default: "rpi-zero"
+  wifi-ssid:
+    description: "Default WiFi SSID (can also be configured via drop-in on SD)"
+    required: false
+    default: ""
+  wifi-pass:
+    description: "Default WiFi password"
+    required: false
+    default: ""
+  ip:
+    description: "Static IP address for wlan0"
+    required: false
+    default: ""
+
+outputs:
+  image-path:
+    description: "Path to the generated .img.gz disk image"
+    value: ${{ steps.build.outputs.image_path }}
+  tarball-path:
+    description: "Path to the generated .tar.gz SD tarball"
+    value: ${{ steps.build.outputs.tarball_path }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up QEMU (ARM emulation)
+      uses: docker/setup-qemu-action@v3
+      with:
+        platforms: arm,arm64
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build Appliance Image
+      id: build
+      shell: bash
+      run: |
+        CMD_ARGS=()
+        
+        if [ -n "${{ inputs.recipe }}" ]; then
+          CMD_ARGS+=(--recipe "${{ inputs.recipe }}")
+        fi
+        
+        if [ -n "${{ inputs.apk }}" ]; then
+          CMD_ARGS+=(--apk "${{ inputs.apk }}")
+        fi
+        
+        if [ -n "${{ inputs.name }}" ]; then
+          CMD_ARGS+=(--name "${{ inputs.name }}")
+        fi
+        
+        if [ -n "${{ inputs.wifi-ssid }}" ]; then
+          CMD_ARGS+=(--wifi-ssid "${{ inputs.wifi-ssid }}")
+        fi
+        
+        if [ -n "${{ inputs.wifi-pass }}" ]; then
+          CMD_ARGS+=(--wifi-pass "${{ inputs.wifi-pass }}")
+        fi
+        
+        if [ -n "${{ inputs.ip }}" ]; then
+          CMD_ARGS+=(--ip "${{ inputs.ip }}")
+        fi
+
+        ${{ github.action_path }}/build.sh "${CMD_ARGS[@]}"
+
+        IMG_PATH=$(ls ${{ github.action_path }}/output/*.img.gz | head -n 1)
+        TAR_PATH=$(ls ${{ github.action_path }}/output/*.tar.gz | head -n 1)
+
+        echo "image_path=${IMG_PATH}" >> $GITHUB_OUTPUT
+        echo "tarball_path=${TAR_PATH}" >> $GITHUB_OUTPUT
