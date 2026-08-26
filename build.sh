@@ -37,6 +37,10 @@ while [[ $# -gt 0 ]]; do
             CLI_APKS+=("$2")
             shift 2
             ;;
+        --board)
+            TARGET_BOARD="$2"
+            shift 2
+            ;;
         --payload)
             PAYLOAD_DIR="$(readlink -f "$2")"
             shift 2
@@ -143,6 +147,7 @@ if alpine_pkgs:
 
 # Procesar paquetes APK (locales o URLs)
 apk_list = pkgs.get("apks", [])
+recipe_dir = os.path.dirname(os.path.abspath("${RECIPE_FILE}"))
 for item in apk_list:
     item = item.strip()
     if not item: continue
@@ -152,11 +157,16 @@ for item in apk_list:
         print(f"  Descargando APK: {item} -> {filename}")
         urllib.request.urlretrieve(item, dest)
     else:
-        if os.path.isfile(item):
-            print(f"  Copiando APK local: {item}")
-            shutil.copy(item, "${CUSTOM_APKS_DIR}")
+        target_path = item
+        if not os.path.isabs(target_path):
+            candidate = os.path.normpath(os.path.join(recipe_dir, item))
+            if os.path.isfile(candidate):
+                target_path = candidate
+        if os.path.isfile(target_path):
+            print(f"  Copiando APK local: {target_path}")
+            shutil.copy(target_path, "${CUSTOM_APKS_DIR}")
         else:
-            print(f"  AVISO: Archivo APK local no encontrado: {item}")
+            print(f"  AVISO: Archivo APK local no encontrado: {target_path}")
 EOF
 
     [ -f "${WORK_DIR}/recipe.env" ] && source "${WORK_DIR}/recipe.env"

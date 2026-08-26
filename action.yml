@@ -43,6 +43,12 @@ outputs:
   tarball-path:
     description: "Path to the generated .tar.gz SD tarball"
     value: ${{ steps.build.outputs.tarball_path }}
+  image_path:
+    description: "Path to the generated .img.gz disk image"
+    value: ${{ steps.build.outputs.image_path }}
+  tarball_path:
+    description: "Path to the generated .tar.gz SD tarball"
+    value: ${{ steps.build.outputs.tarball_path }}
 
 runs:
   using: "composite"
@@ -59,20 +65,36 @@ runs:
       id: build
       shell: bash
       run: |
+        set -e
+        WORKSPACE_DIR="${GITHUB_WORKSPACE:-$(pwd)}"
         CMD_ARGS=()
         
-        if [ -n "${{ inputs.recipe }}" ]; then
-          CMD_ARGS+=(--recipe "${{ inputs.recipe }}")
+        # Convertir recipe a ruta absoluta si es relativa
+        RECIPE_INPUT="${{ inputs.recipe }}"
+        if [ -n "$RECIPE_INPUT" ]; then
+          if [[ "$RECIPE_INPUT" != /* && ! "$RECIPE_INPUT" =~ ^https?:// ]]; then
+            RECIPE_INPUT="$WORKSPACE_DIR/$RECIPE_INPUT"
+          fi
+          CMD_ARGS+=(--recipe "$RECIPE_INPUT")
         fi
         
-        if [ -n "${{ inputs.apk }}" ]; then
-          CMD_ARGS+=(--apk "${{ inputs.apk }}")
+        # Convertir apk a ruta absoluta si es relativa y no es URL
+        APK_INPUT="${{ inputs.apk }}"
+        if [ -n "$APK_INPUT" ]; then
+          if [[ "$APK_INPUT" != /* && ! "$APK_INPUT" =~ ^https?:// ]]; then
+            APK_INPUT="$WORKSPACE_DIR/$APK_INPUT"
+          fi
+          CMD_ARGS+=(--apk "$APK_INPUT")
         fi
         
         if [ -n "${{ inputs.name }}" ]; then
           CMD_ARGS+=(--name "${{ inputs.name }}")
         fi
         
+        if [ -n "${{ inputs.board }}" ]; then
+          CMD_ARGS+=(--board "${{ inputs.board }}")
+        fi
+
         if [ -n "${{ inputs.wifi-ssid }}" ]; then
           CMD_ARGS+=(--wifi-ssid "${{ inputs.wifi-ssid }}")
         fi
@@ -85,10 +107,21 @@ runs:
           CMD_ARGS+=(--ip "${{ inputs.ip }}")
         fi
 
-        ${{ github.action_path }}/build.sh "${CMD_ARGS[@]}"
+        # Ejecutar script de construcción
+        "${{ github.action_path }}/build.sh" "${CMD_ARGS[@]}"
 
-        IMG_PATH=$(ls ${{ github.action_path }}/output/*.img.gz | head -n 1)
-        TAR_PATH=$(ls ${{ github.action_path }}/output/*.tar.gz | head -n 1)
+        # Crear y copiar artefactos generados en la acción hacia el workspace del llamador
+        mkdir -p "$WORKSPACE_DIR/output"
+        if compgen -G "${{ github.action_path }}/output/*" > /dev/null; then
+          echo ">> Copiando artefactos generados a $WORKSPACE_DIR/output/ ..."
+          cp -v ${{ github.action_path }}/output/* "$WORKSPACE_DIR/output/"
+        fi
+
+        # Obtener rutas de artefactos en el workspace
+        IMG_PATH=$(ls "$WORKSPACE_DIR"/output/*.img.gz 2>/dev/null | head -n 1 || true)
+        TAR_PATH=$(ls "$WORKSPACE_DIR"/output/*.tar.gz 2>/dev/null | head -n 1 || true)
 
         echo "image_path=${IMG_PATH}" >> $GITHUB_OUTPUT
         echo "tarball_path=${TAR_PATH}" >> $GITHUB_OUTPUT
+        echo "image-path=${IMG_PATH}" >> $GITHUB_OUTPUT
+        echo "tarball-path=${TAR_PATH}" >> $GITHUB_OUTPUT
