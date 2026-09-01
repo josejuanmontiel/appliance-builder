@@ -14,6 +14,9 @@ packages:
     - ca-certificates
     - curl
     - bind-tools
+    - hostapd
+    - iw
+    - wireless-tools
 
   # Paquetes APK personalizados (rutas locales o URLs https://):
   apks:

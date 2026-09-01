@@ -1,11 +1,7 @@
-# ==============================================================================
-# Paquetes APK adicionales de Alpine Linux a instalar en el primer arranque
-# Uno por línea. Las líneas que empiezan por # son comentarios.
-# ==============================================================================
-
-# Certificados raíz actualizados para HTTPS / TLS
+# Paquetes APK adicionales de Alpine Linux
 ca-certificates
-
-# Herramientas de red y diagnóstico opcionales
 curl
 bind-tools
+hostapd
+iw
+wireless-tools

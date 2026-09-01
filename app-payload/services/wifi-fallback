@@ -1,0 +1,88 @@
+#!/sbin/openrc-run
+
+description="Wi-Fi Connection Watchdog and AP Hotspot Fallback"
+
+depend() {
+    after wpa_supplicant networking dhcpcd
+    before p2pt
+    keyword -lxc -docker
+}
+
+start() {
+    ebegin "Verifying Wi-Fi Connectivity"
+
+    # 1. Esperar hasta 15s a que wlan0 tenga dirección IP (DHCP o estática)
+    has_ip=false
+    for i in $(seq 1 15); do
+        if ip -4 addr show dev wlan0 2>/dev/null | grep -q "inet "; then
+            has_ip=true
+            break
+        fi
+        sleep 1
+    done
+
+    if [ "$has_ip" = true ]; then
+        IP_ADDR=$(ip -4 addr show dev wlan0 | grep "inet " | awk '{print $2}' | cut -d/ -f1)
+        einfo "✔ Conexión Wi-Fi activa. IP asignada: ${IP_ADDR}"
+        eend 0
+        return 0
+    fi
+
+    ewarn "⚠️ No se detectó conexión Wi-Fi ni IP asignada."
+    ewarn ">> Activando Modo Hotspot AP Fallback..."
+
+    # 2. Detener procesos cliente para liberar wlan0
+    killall -q wpa_supplicant || true
+    killall -q udhcpc || true
+    killall -q dhcpcd || true
+    sleep 1
+
+    # 3. Configurar wlan0 con IP estática para la subred de aprovisionamiento
+    ip link set dev wlan0 down 2>/dev/null || true
+    ip addr flush dev wlan0 2>/dev/null || true
+    ip link set dev wlan0 up 2>/dev/null || true
+    ip addr add 192.168.4.1/24 dev wlan0 2>/dev/null || true
+
+    # 4. Generar SSID único con últimos caracteres de la MAC
+    MAC_SUFFIX=$(cat /sys/class/net/wlan0/address 2>/dev/null | tr -d ':' | tail -c 5 | tr 'a-z' 'A-Z')
+    [ -z "$MAC_SUFFIX" ] && MAC_SUFFIX="ZERO"
+    HOTSPOT_SSID="Pingo-Box-${MAC_SUFFIX}"
+
+    # 5. Iniciar hostapd si está instalado
+    if command -v hostapd >/dev/null 2>&1; then
+        cat <<HOSTAPD_EOF > /tmp/hostapd.conf
+interface=wlan0
+driver=nl80211
+ssid=${HOTSPOT_SSID}
+hw_mode=g
+channel=6
+auth_algs=1
+wmm_enabled=0
+HOSTAPD_EOF
+        einfo "Iniciando AP Wi-Fi: ${HOTSPOT_SSID}..."
+        hostapd -B /tmp/hostapd.conf >/var/log/hostapd.log 2>&1 || true
+    else
+        ewarn "hostapd no disponible en PATH; interfaz wlan0 configurada en 192.168.4.1"
+    fi
+
+    # 6. Iniciar servidor DHCP ligero (udhcpd de busybox)
+    cat <<UDHCPD_EOF > /tmp/udhcpd.conf
+start 192.168.4.10
+end 192.168.4.50
+interface wlan0
+opt router 192.168.4.1
+opt subnet 255.255.255.0
+opt dns 192.168.4.1
+lease_file /tmp/udhcpd.leases
+UDHCPD_EOF
+    touch /tmp/udhcpd.leases
+    udhcpd -S /tmp/udhcpd.conf >/dev/null 2>&1 || true
+
+    einfo "============================================================"
+    einfo "  📻 MODO HOTSPOT ACTIVO: ${HOTSPOT_SSID}"
+    einfo "  1. Conéctate con tu móvil/PC a la Wi-Fi: ${HOTSPOT_SSID}"
+    einfo "  2. Abre en tu navegador: http://192.168.4.1:9000/"
+    einfo "============================================================"
+
+    eend 0
+}

@@ -32,8 +32,6 @@ else
 fi
 
 echo "  Extrayendo sistema base en ${BOOTFS}..."
-# Limpiar bootfs para asegurar que el APKINDEX original firmado de Alpine
-# siempre prevalezca sobre cualquier index regenerado de builds anteriores.
 rm -rf "${BOOTFS}"
 mkdir -p "${BOOTFS}"
 tar -xzf "${CACHE_DIR}/${BASE_TARBALL}" -C "${BOOTFS}"
@@ -44,15 +42,10 @@ EXTRA_APKS_FILE="${WORKDIR}/extra-apks.txt"
 if [ -f "$EXTRA_APKS_FILE" ]; then
     EXTRA_PKGS=$(grep -v '^#' "$EXTRA_APKS_FILE" | grep -v '^$' | tr '\n' ' ' || true)
     if [ -n "$EXTRA_PKGS" ]; then
-        echo "  Descargando paquetes adicionales para el modloop: ${EXTRA_PKGS}..."
+        echo "  Descargando paquetes adicionales: ${EXTRA_PKGS}..."
         TEMP_ROOTFS="${WORKDIR}/temp_rootfs"
         mkdir -p "${TEMP_ROOTFS}"
 
-        # Descargar los .apk en un directorio SEPARADO del repo principal
-        # IMPORTANTE: NO mezclar con apks/ ni regenerar su APKINDEX.
-        # El APKINDEX original de Alpine 3.19.1 es firmado y necesario para que
-        # el boot diskless pueda instalar alpine-base. Si lo regeneramos sin firmar,
-        # APK no puede instalar la base del sistema y /sbin/init nunca se crea.
         EXTRA_PKGS_DIR="${WORKDIR}/extra-pkgs"
         mkdir -p "${EXTRA_PKGS_DIR}"
         apk.static --arch "$ALPINE_ARCH" \
@@ -66,6 +59,10 @@ if [ -f "$EXTRA_APKS_FILE" ]; then
             fetch -R -o "${EXTRA_PKGS_DIR}" ${EXTRA_PKGS} >/dev/null 2>&1 || true
 
         rm -rf "${TEMP_ROOTFS}"
+
+        # Inyectar paquetes extra en custom-apks para empaquetarlos directamente en el overlay
+        mkdir -p "${WORKDIR}/custom-apks"
+        cp -f "${EXTRA_PKGS_DIR}"/*.apk "${WORKDIR}/custom-apks/" 2>/dev/null || true
     fi
 fi
 

@@ -1,20 +1,102 @@
 #!/sbin/openrc-run
 
-description="Generic Appliance First Boot & Storage Setup"
+description="Appliance Early Hardware, Storage and Network Setup"
 
 depend() {
-    need net
-    after wpa_supplicant networking dhcpcd
+    before localmount networking wpa_supplicant
     keyword -lxc -docker
 }
 
 start() {
-    ebegin "Initializing Appliance Storage and Base Services"
+    ebegin "Initializing Appliance Storage & Network Overrides"
 
-    # 1. Montar partición de datos persistente (/dev/mmcblk0p2)
+    # 1. Montar partición de arranque FAT32 (/dev/mmcblk0p1) si aún no está montada
+    BOOT_FAT="/media/mmcblk0p1"
+    mkdir -p "$BOOT_FAT"
+    if ! mountpoint -q "$BOOT_FAT"; then
+        mount -t vfat -o ro,noatime /dev/mmcblk0p1 "$BOOT_FAT" 2>/dev/null || true
+    fi
+
+    # 2. Comprobar credenciales WiFi en la partición FAT32 (Drop-in wifi.txt)
+    if [ -f "$BOOT_FAT/wifi.txt" ]; then
+        einfo "Detectado $BOOT_FAT/wifi.txt. Aplicando configuración WiFi..."
+        SSID_IN=$(grep -i '^SSID=' "$BOOT_FAT/wifi.txt" | cut -d= -f2- | tr -d '\r"' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        PASS_IN=$(grep -i '^PASS=' "$BOOT_FAT/wifi.txt" | cut -d= -f2- | tr -d '\r"' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+        if [ -n "$SSID_IN" ]; then
+            mkdir -p /etc/wpa_supplicant
+            cat <<WPA_EOF > /etc/wpa_supplicant/wpa_supplicant.conf
+ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev
+update_config=1
+country=ES
+
+network={
+    ssid="$SSID_IN"
+    psk="$PASS_IN"
+    key_mgmt=WPA-PSK
+}
+WPA_EOF
+            touch /run/appliance_has_wifi_config
+            einfo "WiFi configurado para SSID: $SSID_IN"
+        fi
+    fi
+
+    # 3. Comprobar configuración IP en la partición FAT32 (Drop-in ip.txt)
+    if [ -f "$BOOT_FAT/ip.txt" ]; then
+        einfo "Detectado $BOOT_FAT/ip.txt. Aplicando configuración IP estática..."
+        IP_IN=$(grep -i '^IP=' "$BOOT_FAT/ip.txt" | cut -d= -f2- | tr -d '\r"' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        MASK_IN=$(grep -i '^NETMASK=' "$BOOT_FAT/ip.txt" | cut -d= -f2- | tr -d '\r"' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        GW_IN=$(grep -i '^GATEWAY=' "$BOOT_FAT/ip.txt" | cut -d= -f2- | tr -d '\r"' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        DNS_IN=$(grep -i '^DNS=' "$BOOT_FAT/ip.txt" | cut -d= -f2- | tr -d '\r"' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+        [ -z "$MASK_IN" ] && MASK_IN="255.255.255.0"
+        [ -z "$GW_IN" ] && GW_IN="192.168.1.1"
+
+        if [ -n "$IP_IN" ]; then
+            cat <<IF_EOF > /etc/network/interfaces
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet dhcp
+
+auto wlan0
+iface wlan0 inet static
+    address $IP_IN
+    netmask $MASK_IN
+    gateway $GW_IN
+IF_EOF
+            if [ -n "$DNS_IN" ]; then
+                > /etc/resolv.conf
+                for dns in $DNS_IN; do
+                    echo "nameserver $dns" >> /etc/resolv.conf
+                done
+            fi
+            touch /run/appliance_has_ip_config
+            einfo "IP estática fijada: $IP_IN (GW: $GW_IN)"
+        fi
+    fi
+
+    # Si no hay ip.txt ni IP estática definida en interfaces, configurar wlan0 con DHCP por defecto
+    if [ ! -f /run/appliance_has_ip_config ] && ! grep -q "iface wlan0 inet static" /etc/network/interfaces 2>/dev/null; then
+        cat <<IF_EOF > /etc/network/interfaces
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet dhcp
+
+auto wlan0
+iface wlan0 inet dhcp
+IF_EOF
+    fi
+
+    # 4. Asegurar root password en runtime
+    echo "root:${ROOT_PASSWORD:-alpine}" | chpasswd 2>/dev/null || true
+
+    # 5. Montar partición de datos persistente (/dev/mmcblk0p2) si existe
     DATA_ROOT="/mnt/data"
     mkdir -p "$DATA_ROOT"
-
     if [ -b "/dev/mmcblk0p2" ]; then
         if ! blkid "/dev/mmcblk0p2" 2>/dev/null | grep -q "ext4"; then
             einfo "Formateando /dev/mmcblk0p2 como ext4..."
@@ -24,39 +106,7 @@ start() {
             mount /dev/mmcblk0p2 "$DATA_ROOT" 2>/dev/null || true
         fi
     fi
-
     mkdir -p "$DATA_ROOT/config" "$DATA_ROOT/data" "$DATA_ROOT/logs"
-
-    # 2. Sincronización NTP y descarga de paquetes adicionales en primer arranque
-    EXTRA_APKS="/etc/appliance/extra-apks.txt"
-    [ ! -f "$EXTRA_APKS" ] && EXTRA_APKS="/workspace/app-payload/config/extra-apks.txt"
-
-    NEED_PKGS=""
-    if [ -f "$EXTRA_APKS" ]; then
-        for pkg in $(grep -v '^#' "$EXTRA_APKS" | grep -v '^$' || true); do
-            command -v "$pkg" >/dev/null 2>&1 || NEED_PKGS="$NEED_PKGS $pkg"
-        done
-    fi
-
-    einfo "Esperando conectividad de red para sincronización horaria..."
-    retry=0
-    while ! ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1 && [ $retry -lt 15 ]; do
-        retry=$((retry + 1))
-        sleep 2
-    done
-
-    if ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1; then
-        einfo "Red activa. Sincronizando reloj via NTP..."
-        ntpd -d -n -q -p pool.ntp.org >/dev/null 2>&1 || true
-
-        if [ -n "$NEED_PKGS" ]; then
-            einfo "Instalando paquetes adicionales: ${NEED_PKGS}..."
-            apk update --quiet 2>/dev/null || apk update
-            apk add $NEED_PKGS 2>/dev/null || true
-        fi
-    else
-        ewarn "Sin conexión a Internet tras 30s. Continuando arranque."
-    fi
 
     eend 0
 }
