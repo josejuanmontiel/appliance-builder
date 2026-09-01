@@ -1,0 +1,25 @@
+#!/sbin/openrc-run
+
+description="Automatic Network Time Protocol (NTP) Time Sync"
+
+depend() {
+    after networking wpa_supplicant
+    keyword -lxc -docker
+}
+
+start() {
+    ebegin "Starting NTP daemon and syncing system clock"
+    (
+        # Intentar sincronización rápida stepping
+        for i in $(seq 1 10); do
+            if ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1 || ping -c 1 -W 2 pool.ntp.org >/dev/null 2>&1; then
+                ntpd -d -n -q -p pool.ntp.org >/dev/null 2>&1 || true
+                break
+            fi
+            sleep 2
+        done
+        # Dejar ntpd corriendo en segundo plano
+        ntpd -N -p pool.ntp.org >/dev/null 2>&1 || true
+    ) &
+    eend 0
+}
