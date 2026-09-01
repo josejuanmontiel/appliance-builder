@@ -29,26 +29,21 @@ start() {
     fi
 
     ewarn "⚠️ No se detectó conexión Wi-Fi ni IP asignada."
-    ewarn ">> Activando Modo Hotspot AP Fallback..."
+    ewarn ">> Activando Modo Hotspot AP Fallback con DHCP y Portal Cautivo..."
 
     # 2. Detener procesos cliente para liberar wlan0
     killall -q wpa_supplicant || true
     killall -q udhcpc || true
     killall -q dhcpcd || true
+    killall -q dnsmasq || true
     sleep 1
 
-    # 3. Configurar wlan0 con IP estática para la subred de aprovisionamiento
-    ip link set dev wlan0 down 2>/dev/null || true
-    ip addr flush dev wlan0 2>/dev/null || true
-    ip link set dev wlan0 up 2>/dev/null || true
-    ip addr add 192.168.4.1/24 dev wlan0 2>/dev/null || true
-
-    # 4. Generar SSID único con últimos caracteres de la MAC
+    # 3. Generar SSID único con últimos caracteres de la MAC
     MAC_SUFFIX=$(cat /sys/class/net/wlan0/address 2>/dev/null | tr -d ':' | tail -c 5 | tr 'a-z' 'A-Z')
     [ -z "$MAC_SUFFIX" ] && MAC_SUFFIX="ZERO"
     HOTSPOT_SSID="Pingo-Box-${MAC_SUFFIX}"
 
-    # 5. Iniciar hostapd si está instalado
+    # 4. Iniciar hostapd para crear la red Wi-Fi
     if command -v hostapd >/dev/null 2>&1; then
         cat <<HOSTAPD_EOF > /tmp/hostapd.conf
 interface=wlan0
@@ -61,22 +56,34 @@ wmm_enabled=0
 HOSTAPD_EOF
         einfo "Iniciando AP Wi-Fi: ${HOTSPOT_SSID}..."
         hostapd -B /tmp/hostapd.conf >/var/log/hostapd.log 2>&1 || true
+        sleep 2
     else
-        ewarn "hostapd no disponible en PATH; interfaz wlan0 configurada en 192.168.4.1"
+        ewarn "hostapd no disponible en PATH"
     fi
 
-    # 6. Iniciar servidor DHCP ligero (udhcpd de busybox)
-    cat <<UDHCPD_EOF > /tmp/udhcpd.conf
-start 192.168.4.10
-end 192.168.4.50
-interface wlan0
-opt router 192.168.4.1
-opt subnet 255.255.255.0
-opt dns 192.168.4.1
-lease_file /tmp/udhcpd.leases
-UDHCPD_EOF
-    touch /tmp/udhcpd.leases
-    udhcpd -S /tmp/udhcpd.conf >/dev/null 2>&1 || true
+    # 5. Configurar wlan0 con IP estática para la subred de aprovisionamiento (tras hostapd)
+    ip link set dev wlan0 up 2>/dev/null || true
+    ip addr flush dev wlan0 2>/dev/null || true
+    ip addr add 192.168.4.1/24 dev wlan0 2>/dev/null || true
+
+    # 6. Iniciar dnsmasq como root (para evitar error por falta de usuario dnsmasq en /etc/passwd)
+    if command -v dnsmasq >/dev/null 2>&1; then
+        dnsmasq \
+            --user=root \
+            --group=root \
+            --interface=wlan0 \
+            --bind-interfaces \
+            --dhcp-range=192.168.4.10,192.168.4.50,255.255.255.0,12h \
+            --dhcp-option=3,192.168.4.1 \
+            --dhcp-option=6,192.168.4.1 \
+            --address=/#/192.168.4.1 \
+            --no-resolv \
+            --no-poll \
+            --pid-file=/tmp/dnsmasq.pid >/var/log/dnsmasq.log 2>&1 || true
+        einfo "Servidor DHCP y DNS Captive Portal activo en 192.168.4.1"
+    else
+        ewarn "dnsmasq no disponible en PATH"
+    fi
 
     einfo "============================================================"
     einfo "  📻 MODO HOTSPOT ACTIVO: ${HOTSPOT_SSID}"
