@@ -15,6 +15,7 @@ packages:
     - curl
     - bind-tools
     - hostapd
+    - dnsmasq
     - iw
     - wireless-tools
 
