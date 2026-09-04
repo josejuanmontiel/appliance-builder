@@ -45,7 +45,16 @@ printf 'root:%s:0:0:99999:7:::\n' "$ROOT_HASH" > "$TMP"/etc/shadow
 chmod 640 "$TMP"/etc/shadow
 echo "  root password configurado."
 
-# 2c. Configuración SSH
+# 2c. Configuración inicial P2PT / Dashboard
+ADMIN_PASSWORD="${ADMIN_PASSWORD:-alpine}"
+cat <<EOF > "$TMP"/etc/p2pt.env
+ADMIN_PASSWORD=${ADMIN_PASSWORD}
+ALLOW_WAN_DASHBOARD=true
+EOF
+chmod 600 "$TMP"/etc/p2pt.env
+echo "  p2pt.env inicial configurado."
+
+# 2d. Configuración SSH
 cat <<EOF > "$TMP"/etc/ssh/sshd_config
 PermitRootLogin yes
 PasswordAuthentication yes

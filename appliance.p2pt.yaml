@@ -21,7 +21,7 @@ packages:
 
   # Paquetes APK personalizados (rutas locales o URLs https://):
   apks:
-    - "/home/jose/workspace/pingo/server/dist/p2pt-server_1.0.0_armhf.apk"
+    - "/home/jose/workspace/pingo/server/dist/p2pt-server_1.2.0_armhf.apk"
 
 services:
   # Servicios OpenRC a habilitar automáticamente en runlevel default:

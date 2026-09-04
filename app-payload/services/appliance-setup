@@ -41,6 +41,19 @@ WPA_EOF
         fi
     fi
 
+    # 2b. Comprobar contraseña de Dashboard en la partición FAT32 (Drop-in admin_pass.txt)
+    if [ -f "$BOOT_FAT/admin_pass.txt" ]; then
+        PASS_ADMIN=$(head -n 1 "$BOOT_FAT/admin_pass.txt" | tr -d '\r\n"')
+        if [ -n "$PASS_ADMIN" ]; then
+            if [ -f /etc/p2pt.env ] && grep -q '^ADMIN_PASSWORD=' /etc/p2pt.env; then
+                sed -i "s/^ADMIN_PASSWORD=.*/ADMIN_PASSWORD=$PASS_ADMIN/" /etc/p2pt.env
+            else
+                echo "ADMIN_PASSWORD=$PASS_ADMIN" >> /etc/p2pt.env
+            fi
+            einfo "Contraseña del Dashboard configurada desde $BOOT_FAT/admin_pass.txt"
+        fi
+    fi
+
     # 3. Comprobar configuración IP en la partición FAT32 (Drop-in ip.txt)
     if [ -f "$BOOT_FAT/ip.txt" ]; then
         einfo "Detectado $BOOT_FAT/ip.txt. Aplicando configuración IP estática..."
