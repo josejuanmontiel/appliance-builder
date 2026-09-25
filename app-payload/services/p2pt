@@ -15,6 +15,9 @@ depend() {
 }
 
 start_pre() {
+    mount -o remount,rw /media/mmcblk0p1 2>/dev/null || true
+    mkdir -p /media/mmcblk0p1/logs 2>/dev/null || true
+
     if [ -f /etc/p2pt.env ]; then
         set -a
         source /etc/p2pt.env

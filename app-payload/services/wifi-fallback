@@ -43,6 +43,10 @@ start() {
     [ -z "$MAC_SUFFIX" ] && MAC_SUFFIX="ZERO"
     HOTSPOT_SSID="Pingo-Box-${MAC_SUFFIX}"
 
+    # 3b. Preparar directorio de logs persistente en la partición FAT32 de arranque
+    mount -o remount,rw /media/mmcblk0p1 2>/dev/null || true
+    mkdir -p /media/mmcblk0p1/logs 2>/dev/null || true
+
     # 4. Iniciar hostapd para crear la red Wi-Fi
     if command -v hostapd >/dev/null 2>&1; then
         cat <<HOSTAPD_EOF > /tmp/hostapd.conf
@@ -56,6 +60,7 @@ wmm_enabled=0
 HOSTAPD_EOF
         einfo "Iniciando AP Wi-Fi: ${HOTSPOT_SSID}..."
         hostapd -B /tmp/hostapd.conf >/var/log/hostapd.log 2>&1 || true
+        cp -f /var/log/hostapd.log /media/mmcblk0p1/logs/hostapd.log 2>/dev/null || true
         sleep 2
     else
         ewarn "hostapd no disponible en PATH"
@@ -80,6 +85,7 @@ HOSTAPD_EOF
             --no-resolv \
             --no-poll \
             --pid-file=/tmp/dnsmasq.pid >/var/log/dnsmasq.log 2>&1 || true
+        cp -f /var/log/dnsmasq.log /media/mmcblk0p1/logs/dnsmasq.log 2>/dev/null || true
         einfo "Servidor DHCP y DNS Captive Portal activo en 192.168.4.1"
     else
         ewarn "dnsmasq no disponible en PATH"
@@ -88,7 +94,7 @@ HOSTAPD_EOF
     einfo "============================================================"
     einfo "  📻 MODO HOTSPOT ACTIVO: ${HOTSPOT_SSID}"
     einfo "  1. Conéctate con tu móvil/PC a la Wi-Fi: ${HOTSPOT_SSID}"
-    einfo "  2. Abre en tu navegador: http://192.168.4.1:9000/"
+    einfo "  2. El portal cautivo se abrirá solo (o abre http://192.168.4.1/)"
     einfo "============================================================"
 
     eend 0
