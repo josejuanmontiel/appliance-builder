@@ -11,15 +11,22 @@ go build -o appliance-cli main.go
 
 ## Modos de Uso
 
-### 1. Dar de alta subdominios directamente en Cloudflare DNS (`cf-dns`)
+### 1. Iniciar sesión directamente en Cloudflare (`cf-login`)
 
-Permite crear o actualizar registros DNS tipo `A` en Cloudflare con o sin Proxy CDN (para habilitar TLS y ECH automáticamente):
+Permite autenticarse mediante navegador oficial de Cloudflare vía OAuth PKCE sin copiar ni pegar ningún token manual:
 
 ```bash
-export CLOUDFLARE_API_TOKEN="tu-token-cloudflare"
-# Opcional: CLOUDFLARE_ZONE_ID (se autodetermina si se omite)
+./appliance-cli cf-login
+```
+* Abre el navegador en `https://dash.cloudflare.com/oauth2/auth`.
+* Tras autorizar la sesión, el token se guarda de forma segura en `~/.config/appliance-cli/cloudflare.json` con autorefresco.
 
-# Crear subdominio (autodetectando la IP pública WAN):
+### 2. Dar de alta subdominios directamente en Cloudflare DNS (`cf-dns`)
+
+Permite crear o actualizar registros DNS tipo `A` en Cloudflare con o sin Proxy CDN (para habilitar TLS y ECH automáticamente). Si ya hiciste `cf-login`, no necesitas indicar token:
+
+```bash
+# Crear subdominio (autodetectando la IP pública WAN y usando la sesión activa):
 ./appliance-cli cf-dns -id salon -proxied
 
 # Crear o actualizar especificando subdominio e IP manual:

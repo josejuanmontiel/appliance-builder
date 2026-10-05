@@ -3,12 +3,16 @@ package main
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,8 +22,11 @@ import (
 )
 
 const (
-	defaultHubURL = "https://pingo-cloud.accreativos.com"
-	defaultDomain = "appliances.klitosan.com"
+	defaultHubURL            = "https://pingo-cloud.accreativos.com"
+	defaultDomain            = "appliances.klitosan.com"
+	cloudflareOAuthClientID  = "54d11594-84e4-41aa-b438-e81b8fa78ee7" // Client ID público oficial de Cloudflare CLI
+	cloudflareOAuthAuthURL   = "https://dash.cloudflare.com/oauth2/auth"
+	cloudflareOAuthTokenURL  = "https://dash.cloudflare.com/oauth2/token"
 )
 
 func generateSecureToken(length int) string {
@@ -28,6 +35,15 @@ func generateSecureToken(length int) string {
 		return fmt.Sprintf("tok_%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(bytes)
+}
+
+func generatePKCE() (verifier, challenge string) {
+	b := make([]byte, 32)
+	rand.Read(b)
+	verifier = base64.RawURLEncoding.EncodeToString(b)
+	h := sha256.Sum256([]byte(verifier))
+	challenge = base64.RawURLEncoding.EncodeToString(h[:])
+	return
 }
 
 func openBrowser(url string) {
@@ -43,8 +59,107 @@ func openBrowser(url string) {
 		err = fmt.Errorf("sistema operativo no soportado para apertura automática")
 	}
 	if err != nil {
-		// No es un fallo crítico, el usuario puede abrir la URL manualmente
+		// Fallback manual si el entorno no tiene display
 	}
+}
+
+func getCLIConfigDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "."
+	}
+	return filepath.Join(home, ".config", "appliance-cli")
+}
+
+func saveSavedCFTitles(token, refreshToken string, expiresAt time.Time) error {
+	dir := getCLIConfigDir()
+	os.MkdirAll(dir, 0700)
+	configPath := filepath.Join(dir, "cloudflare.json")
+	data := map[string]any{
+		"access_token":  token,
+		"refresh_token": refreshToken,
+		"expires_at":    expiresAt.Unix(),
+	}
+	b, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(configPath, b, 0600)
+}
+
+func loadSavedCFTitles() (string, error) {
+	// 1. Probar credenciales guardadas en ~/.config/appliance-cli/cloudflare.json
+	cfgPath := filepath.Join(getCLIConfigDir(), "cloudflare.json")
+	if b, err := os.ReadFile(cfgPath); err == nil {
+		var data struct {
+			AccessToken  string `json:"access_token"`
+			RefreshToken string `json:"refresh_token"`
+			ExpiresAt    int64  `json:"expires_at"`
+		}
+		if json.Unmarshal(b, &data) == nil && data.AccessToken != "" {
+			if time.Now().Unix() < data.ExpiresAt {
+				return data.AccessToken, nil
+			}
+			// Token expirado: intentar refresh si existe refresh_token
+			if data.RefreshToken != "" {
+				newToken, newRefresh, exp, err := refreshCloudflareToken(data.RefreshToken)
+				if err == nil {
+					_ = saveSavedCFTitles(newToken, newRefresh, exp)
+					return newToken, nil
+				}
+			}
+		}
+	}
+
+	// 2. Probar credenciales existentes de Wrangler en ~/.config/.wrangler/config/default.toml
+	home, _ := os.UserHomeDir()
+	wranglerConfig := filepath.Join(home, ".config", ".wrangler", "config", "default.toml")
+	if b, err := os.ReadFile(wranglerConfig); err == nil {
+		content := string(b)
+		for _, line := range strings.Split(content, "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "oauth_token =") {
+				parts := strings.SplitN(line, "=", 2)
+				if len(parts) == 2 {
+					tok := strings.Trim(strings.TrimSpace(parts[1]), "\"")
+					if tok != "" {
+						return tok, nil
+					}
+				}
+			}
+		}
+	}
+
+	return "", fmt.Errorf("no hay sesión activa de Cloudflare")
+}
+
+func refreshCloudflareToken(refreshToken string) (string, string, time.Time, error) {
+	data := url.Values{}
+	data.Set("grant_type", "refresh_token")
+	data.Set("client_id", cloudflareOAuthClientID)
+	data.Set("refresh_token", refreshToken)
+
+	resp, err := http.PostForm(cloudflareOAuthTokenURL, data)
+	if err != nil {
+		return "", "", time.Time{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", "", time.Time{}, fmt.Errorf("refresh token fallido (HTTP %d)", resp.StatusCode)
+	}
+
+	var res struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		ExpiresIn    int    `json:"expires_in"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return "", "", time.Time{}, err
+	}
+
+	exp := time.Now().Add(time.Duration(res.ExpiresIn) * time.Second)
+	return res.AccessToken, res.RefreshToken, exp, nil
 }
 
 func printUsage() {
@@ -54,29 +169,29 @@ Uso:
   appliance-cli <comando> [opciones]
 
 Comandos disponibles:
-  login       Inicia sesión vía Web (OAuth 2.0 Device Flow RFC 8628) sin tokens manuales
-  cf-dns      Crea o actualiza directamente un registro DNS (A o CNAME) en la API de Cloudflare
+  cf-login    Inicia sesión directamente en tu cuenta de Cloudflare vía Web (OAuth PKCE)
+  cf-dns      Crea o actualiza directamente un registro DNS en Cloudflare (usa sesión o token)
+  login       Inicia sesión en Cloud Hub para appliance (OAuth 2.0 Device Flow RFC 8628)
   register    Registra o autoriza un appliance en el Cloud Hub (Cloudflare KV)
   heartbeat   Envía un latido de prueba para verificar conectividad y resolución ECH
   dropin      Genera o actualiza el archivo drop-in ddns.txt para tarjetas SD/FAT32
   help        Muestra esta ayuda
 
 Variables de entorno soportadas:
-  CLOUDFLARE_API_TOKEN   Token con permisos Zone.DNS:Edit para gestionar registros DNS
-  CLOUDFLARE_ZONE_ID     ID de la zona DNS en Cloudflare (ej. para klitosan.com)
+  CLOUDFLARE_API_TOKEN   Token con permisos Zone.DNS:Edit (opcional si usas 'cf-login')
+  CLOUDFLARE_ZONE_ID     ID de la zona DNS en Cloudflare (opcional, se autodetermina)
   HUB_URL                URL del Cloud Hub (Por defecto: https://pingo-cloud.accreativos.com)
   ADMIN_API_KEY          Clave de administración de Cloudflare Worker (opcional)
 
 Ejemplos:
-  # 1. Crear subdominio directamente en Cloudflare DNS:
-  appliance-cli cf-dns -subdomain salon.appliances.klitosan.com -ip 1.2.3.4 -proxied
-  appliance-cli cf-dns -id oficina -ip 85.12.34.56
+  # 1. Login Web con tu cuenta de Cloudflare (sin copiar ni pegar tokens):
+  appliance-cli cf-login
 
-  # 2. Login interactivo para aprovisionar appliance:
+  # 2. Dar de alta subdominio en Cloudflare DNS usando la sesión activa:
+  appliance-cli cf-dns -id salon -proxied
+
+  # 3. Provisionar appliance en Cloud Hub mediante Device Code web:
   appliance-cli login -id salon -out ./ddns.txt
-
-  # 3. Comprobación de heartbeat:
-  appliance-cli heartbeat -id salon -token <token>
 `)
 }
 
@@ -88,6 +203,8 @@ func main() {
 
 	command := os.Args[1]
 	switch command {
+	case "cf-login":
+		runCloudflareLogin(os.Args[2:])
 	case "cf-dns":
 		runCloudflareDNS(os.Args[2:])
 	case "login":
@@ -115,22 +232,159 @@ func getEnvOrDefault(envKey, defVal string) string {
 	return defVal
 }
 
-// runCloudflareDNS permite gestionar directamente registros DNS en Cloudflare sin intermediarios
+// runCloudflareLogin inicia el flujo OAuth PKCE oficial de Cloudflare
+func runCloudflareLogin(args []string) {
+	fs := flag.NewFlagSet("cf-login", flag.ExitOnError)
+	portFlag := fs.Int("port", 8976, "Puerto local para recibir callback OAuth")
+	noBrowser := fs.Bool("no-browser", false, "No abrir el navegador automáticamente")
+	fs.Parse(args)
+
+	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", *portFlag))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Error abriendo listener en puerto %d: %v\n", *portFlag, err)
+		os.Exit(1)
+	}
+	defer listener.Close()
+
+	verifier, challenge := generatePKCE()
+	state := generateSecureToken(16)
+	redirectURI := fmt.Sprintf("http://localhost:%d/oauth/callback", *portFlag)
+
+	authParams := url.Values{}
+	authParams.Set("response_type", "code")
+	authParams.Set("client_id", cloudflareOAuthClientID)
+	authParams.Set("redirect_uri", redirectURI)
+	authParams.Set("scope", "account:read user:read zone:read zone:edit dns:edit offline_access")
+	authParams.Set("state", state)
+	authParams.Set("code_challenge", challenge)
+	authParams.Set("code_challenge_method", "S256")
+
+	loginURL := fmt.Sprintf("%s?%s", cloudflareOAuthAuthURL, authParams.Encode())
+
+	fmt.Println("==================================================================")
+	fmt.Println("           ☁️ INICIO DE SESIÓN EN CLOUDFLARE (OAUTH WEB)          ")
+	fmt.Println("==================================================================")
+	fmt.Println("Iniciando autorización en tu navegador web...")
+	fmt.Printf("Si el navegador no se abre, visita esta URL:\n\033[1;36m%s\033[0m\n", loginURL)
+	fmt.Println("------------------------------------------------------------------")
+
+	if !*noBrowser {
+		openBrowser(loginURL)
+	}
+
+	codeChan := make(chan string, 1)
+	errChan := make(chan error, 1)
+
+	server := &http.Server{}
+	http.HandleFunc("/oauth/callback", func(w http.ResponseWriter, r *http.Request) {
+		reqState := r.URL.Query().Get("state")
+		if reqState != state {
+			http.Error(w, "State mismatch", http.StatusBadRequest)
+			errChan <- fmt.Errorf("state mismatch en callback")
+			return
+		}
+		authCode := r.URL.Query().Get("code")
+		if authCode == "" {
+			errMsg := r.URL.Query().Get("error_description")
+			if errMsg == "" {
+				errMsg = r.URL.Query().Get("error")
+			}
+			http.Error(w, "Error de autorización: "+errMsg, http.StatusBadRequest)
+			errChan <- fmt.Errorf("error de autorización: %s", errMsg)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write([]byte(`<!DOCTYPE html><html><body style="font-family:sans-serif;background:#0f172a;color:#f8fafc;display:flex;align-items:center;justify-content:center;height:90vh"><div style="text-align:center;padding:30px;background:#1e293b;border-radius:12px;border:1px solid #334155"><h1 style="color:#38bdf8">✅ ¡Autenticación Completada!</h1><p style="color:#94a3b8">Ya puedes cerrar esta pestaña y volver a tu terminal.</p></div></body></html>`))
+		codeChan <- authCode
+	})
+
+	go func() {
+		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
+			errChan <- err
+		}
+	}()
+
+	fmt.Println("⏳ Esperando respuesta de autorización de Cloudflare en tu navegador...")
+
+	select {
+	case code := <-codeChan:
+		_ = server.Close()
+		fmt.Println("🔑 Código de autorización recibido. Intercambiando por token...")
+
+		tokenVals := url.Values{}
+		tokenVals.Set("grant_type", "authorization_code")
+		tokenVals.Set("client_id", cloudflareOAuthClientID)
+		tokenVals.Set("code", code)
+		tokenVals.Set("redirect_uri", redirectURI)
+		tokenVals.Set("code_verifier", verifier)
+
+		tokenResp, err := http.PostForm(cloudflareOAuthTokenURL, tokenVals)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Error al canjear token: %v\n", err)
+			os.Exit(1)
+		}
+		defer tokenResp.Body.Close()
+
+		tokenBody, _ := io.ReadAll(tokenResp.Body)
+		if tokenResp.StatusCode != http.StatusOK {
+			fmt.Fprintf(os.Stderr, "❌ Cloudflare rechazó el intercambio de token (HTTP %d): %s\n", tokenResp.StatusCode, string(tokenBody))
+			os.Exit(1)
+		}
+
+		var tokData struct {
+			AccessToken  string `json:"access_token"`
+			RefreshToken string `json:"refresh_token"`
+			ExpiresIn    int    `json:"expires_in"`
+		}
+		json.Unmarshal(tokenBody, &tokData)
+
+		exp := time.Now().Add(time.Duration(tokData.ExpiresIn) * time.Second)
+		err = saveSavedCFTitles(tokData.AccessToken, tokData.RefreshToken, exp)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "⚠️ Error guardando credenciales en disco: %v\n", err)
+		}
+
+		fmt.Println("\n🎉 ¡Sesión iniciada con éxito en Cloudflare!")
+		fmt.Printf("   • Credenciales guardadas en: %s/cloudflare.json\n", getCLIConfigDir())
+		fmt.Println("   • Ahora puedes ejecutar 'appliance-cli cf-dns' sin necesidad de pasar ningún token manual.")
+
+	case err := <-errChan:
+		_ = server.Close()
+		fmt.Fprintf(os.Stderr, "❌ Error en callback: %v\n", err)
+		os.Exit(1)
+	case <-time.After(120 * time.Second):
+		_ = server.Close()
+		fmt.Fprintln(os.Stderr, "⌛ Tiempo agotado esperando la autorización web.")
+		os.Exit(1)
+	}
+}
+
+// runCloudflareDNS gestiona directamente registros DNS en Cloudflare
 func runCloudflareDNS(args []string) {
 	fs := flag.NewFlagSet("cf-dns", flag.ExitOnError)
 	idFlag := fs.String("id", "", "ID del appliance (se usará como <id>.appliances.klitosan.com si no se especifica -subdomain)")
 	subdomainFlag := fs.String("subdomain", "", "FQDN completo del registro DNS (ej: salon.appliances.klitosan.com)")
 	ipFlag := fs.String("ip", "", "Dirección IP pública para el registro A (si se omite, se detectará la IP pública actual)")
 	proxiedFlag := fs.Bool("proxied", true, "Habilitar proxy CDN de Cloudflare (activa ECH / TLS automático)")
-	cfTokenFlag := fs.String("token", os.Getenv("CLOUDFLARE_API_TOKEN"), "Cloudflare API Token (o variable CLOUDFLARE_API_TOKEN)")
+	cfTokenFlag := fs.String("token", os.Getenv("CLOUDFLARE_API_TOKEN"), "Cloudflare API Token (opcional si ya hiciste 'appliance-cli cf-login')")
 	zoneIDFlag := fs.String("zone", os.Getenv("CLOUDFLARE_ZONE_ID"), "Cloudflare Zone ID (o variable CLOUDFLARE_ZONE_ID)")
 
 	fs.Parse(args)
 
 	cfToken := strings.TrimSpace(*cfTokenFlag)
 	if cfToken == "" {
-		fmt.Fprintln(os.Stderr, "❌ Error: Se requiere CLOUDFLARE_API_TOKEN (-token o variable de entorno).")
-		os.Exit(1)
+		// Intentar cargar token de sesión guardada previamente con cf-login o wrangler
+		savedToken, err := loadSavedCFTitles()
+		if err == nil && savedToken != "" {
+			cfToken = savedToken
+			fmt.Println("🔐 Usando sesión activa de Cloudflare.")
+		} else {
+			fmt.Fprintln(os.Stderr, "❌ Error: No se encontró sesión ni token de Cloudflare.")
+			fmt.Fprintln(os.Stderr, "   👉 Inicia sesión con: appliance-cli cf-login")
+			fmt.Fprintln(os.Stderr, "   👉 O define la variable: export CLOUDFLARE_API_TOKEN=...")
+			os.Exit(1)
+		}
 	}
 
 	subdomain := strings.TrimSpace(*subdomainFlag)
@@ -266,7 +520,6 @@ func detectZoneID(client *http.Client, token, subdomain string) (string, error) 
 		return "", err
 	}
 
-	// Buscar la zona que coincida con el sufijo del subdominio
 	for _, z := range zonesResp.Result {
 		if strings.HasSuffix(subdomain, z.Name) {
 			return z.ID, nil
