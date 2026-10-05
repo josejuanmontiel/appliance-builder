@@ -59,6 +59,11 @@ IMG_GZ_FILE="${IMG_FILE}.gz"
 echo "  Generando Tarball para SD: ${NAME_PREFIX}.tar.gz..."
 tar -czf "${TARBALL_FILE}" -C "${BOOTFS}" .
 
+# Exportar artefacto OTA (localhost.apkovl.tar.gz) y hash
+echo "  Exportando artefacto OTA: localhost.apkovl.tar.gz..."
+cp -f "${BOOTFS}/localhost.apkovl.tar.gz" "${OUTPUT_DIR}/localhost.apkovl.tar.gz"
+sha256sum "${OUTPUT_DIR}/localhost.apkovl.tar.gz" | awk '{print $1}' > "${OUTPUT_DIR}/localhost.apkovl.tar.gz.sha256"
+
 # 5. Generar Imagen de disco cruda (.img) con 2 particiones
 echo "  Generando Imagen de disco con particiones (Boot ${BOOT_PART_MB:-512}MB + Data ${DATA_PART_MB:-512}MB)..."
 

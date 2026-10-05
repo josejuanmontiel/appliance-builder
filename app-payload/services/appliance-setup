@@ -119,7 +119,7 @@ IF_EOF
             mount /dev/mmcblk0p2 "$DATA_ROOT" 2>/dev/null || true
         fi
     fi
-    mkdir -p "$DATA_ROOT/config" "$DATA_ROOT/data" "$DATA_ROOT/logs"
+    mkdir -p "$DATA_ROOT/config" "$DATA_ROOT/data" "$DATA_ROOT/logs" "$DATA_ROOT/gotosocial/storage"
 
     eend 0
 }

@@ -23,20 +23,26 @@ echo "============================================================"
 IMG_FILE=$(ls "${OUTPUT_DIR}"/*.img 2>/dev/null | head -n 1)
 
 docker run --rm -it \
+    --privileged \
+    --net=host \
+    --platform linux/amd64 \
     -v "${WORK_DIR}:/bootfs:ro" \
-    -v "${OUTPUT_DIR}:/output:ro" \
+    -v "${OUTPUT_DIR}:/output:rw" \
     alpine:3.19 \
     sh -c "
         apk add --no-cache qemu-system-arm >/dev/null 2>&1
-        echo '>> Iniciando emulación QEMU con Tarjeta SD emulada...'
+        echo '>> Iniciando emulación QEMU con TAP/Bridge (br0 -> tap0)...'
+        echo '>> La máquina QEMU estará visible directamente en la red local (192.168.1.50)'
         echo '>> Presiona Ctrl+A luego X para salir de QEMU.'
         qemu-system-arm \
             -M raspi2b \
-            -m 512M \
+            -m 1G \
             -kernel /bootfs/boot/vmlinuz-rpi \
             -initrd /bootfs/boot/initramfs-rpi \
             -dtb /bootfs/bcm2836-rpi-2-b.dtb \
-            -drive file=/output/$(basename "$IMG_FILE"),format=raw,if=sd \
-            -append 'modules=loop,squashfs,sd-mod console=ttyAMA0,115200' \
+            -drive file=/output/\$(basename \"$IMG_FILE\"),format=raw,if=sd,snapshot=on \
+            -netdev tap,id=net0,ifname=tap0,script=no,downscript=no \
+            -device usb-net,netdev=net0 \
+            -append 'modules=loop,squashfs,sd-mod,usbnet console=ttyAMA0,115200' \
             -nographic
     "

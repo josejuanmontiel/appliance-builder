@@ -48,6 +48,8 @@ echo "  root password configurado."
 # 2c. Configuración inicial P2PT / Dashboard
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-alpine}"
 cat <<EOF > "$TMP"/etc/p2pt.env
+PORT=${P2PT_PORT:-443}
+TURN_PORT=${TURN_PORT:-3478}
 ADMIN_PASSWORD=${ADMIN_PASSWORD}
 ALLOW_WAN_DASHBOARD=true
 EOF
@@ -175,6 +177,13 @@ if [ -n "${PAYLOAD_DIR}" ] && [ "${PAYLOAD_DIR}" != "/" ] && [ -d "${PAYLOAD_DIR
     done
 fi
 
+# 8b2. Inyectar árbol /usr genérico desde app-payload/usr/ a /usr/
+if [ -n "${PAYLOAD_DIR}" ] && [ "${PAYLOAD_DIR}" != "/" ] && [ -d "${PAYLOAD_DIR}/usr" ]; then
+    echo "  Inyectando payload del sistema en /usr/..."
+    mkdir -p "$TMP/usr"
+    cp -r "${PAYLOAD_DIR}/usr/"* "$TMP/usr/" 2>/dev/null || true
+fi
+
 # 8c. Inyectar configuraciones personalizadas desde app-payload/etc/
 if [ -n "${PAYLOAD_DIR}" ] && [ "${PAYLOAD_DIR}" != "/" ] && [ -d "${PAYLOAD_DIR}/etc" ]; then
     for item in "${PAYLOAD_DIR}/etc/"*; do
@@ -196,6 +205,16 @@ if [ -d "$CUSTOM_APKS_DIR" ] && [ "$(ls -A "$CUSTOM_APKS_DIR" 2>/dev/null)" ]; t
             tar -xzf "$apk" -C "$TMP" --exclude='.PKGINFO' --exclude='.SIGN.*' 2>/dev/null || tar -xzf "$apk" -C "$TMP"
         fi
     done
+fi
+
+# Re-aplicar overrides de payload/services y payload/etc para asegurar que prevalecen sobre APKs empaquetados
+if [ -n "${PAYLOAD_DIR}" ] && [ "${PAYLOAD_DIR}" != "/" ]; then
+    if [ -d "${PAYLOAD_DIR}/services" ]; then
+        cp -f "${PAYLOAD_DIR}/services/"* "$TMP/etc/init.d/" 2>/dev/null || true
+    fi
+    if [ -d "${PAYLOAD_DIR}/etc" ]; then
+        cp -rf "${PAYLOAD_DIR}/etc/"* "$TMP/etc/" 2>/dev/null || true
+    fi
 fi
 
 # 8e. Auto-habilitar servicios OpenRC de la aplicación en el runlevel default
