@@ -10,7 +10,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -23,10 +25,26 @@ const (
 func generateSecureToken(length int) string {
 	bytes := make([]byte, length)
 	if _, err := rand.Read(bytes); err != nil {
-		// Fallback simple timestamp based pseudo-random
 		return fmt.Sprintf("tok_%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(bytes)
+}
+
+func openBrowser(url string) {
+	var err error
+	switch runtime.GOOS {
+	case "linux":
+		err = exec.Command("xdg-open", url).Start()
+	case "windows":
+		err = exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
+	case "darwin":
+		err = exec.Command("open", url).Start()
+	default:
+		err = fmt.Errorf("sistema operativo no soportado para apertura automática")
+	}
+	if err != nil {
+		// No es un fallo crítico, el usuario puede abrir la URL manualmente
+	}
 }
 
 func printUsage() {
@@ -36,7 +54,8 @@ Uso:
   appliance-cli <comando> [opciones]
 
 Comandos disponibles:
-  register    Registra o autoriza un appliance en el Cloud Hub (Cloudflare KV)
+  login       Inicia sesión vía Web (OAuth 2.0 Device Flow RFC 8628) sin introducir tokens manuales
+  register    Registra o autoriza un appliance directamente con token manual o autogenerado
   heartbeat   Envía un latido de prueba para verificar conectividad y resolución ECH
   dropin      Genera o actualiza el archivo drop-in ddns.txt para tarjetas SD/FAT32
   help        Muestra esta ayuda
@@ -46,9 +65,14 @@ Variables de entorno soportadas:
   ADMIN_API_KEY  Clave de administración de Cloudflare Worker (opcional)
 
 Ejemplos:
+  # Login interactivo mediante navegador (¡Recomendado!):
+  appliance-cli login -id salon -out ./ddns.txt
+
+  # Registro directo:
   appliance-cli register -id nodo-oficina -out ./ddns.txt
+
+  # Comprobación de conectividad:
   appliance-cli heartbeat -id nodo-oficina -token <token>
-  appliance-cli dropin -id nodo-oficina -token <token> -out /media/sdcard/ddns.txt
 `)
 }
 
@@ -60,6 +84,8 @@ func main() {
 
 	command := os.Args[1]
 	switch command {
+	case "login":
+		runLogin(os.Args[2:])
 	case "register":
 		runRegister(os.Args[2:])
 	case "heartbeat":
@@ -81,6 +107,150 @@ func getEnvOrDefault(envKey, defVal string) string {
 		return v
 	}
 	return defVal
+}
+
+func runLogin(args []string) {
+	fs := flag.NewFlagSet("login", flag.ExitOnError)
+	idFlag := fs.String("id", "", "ID único del appliance a autorizar (ej: salon, oficina, nodo-01)")
+	subdomainFlag := fs.String("subdomain", "", "Subdominio FQDN deseado (opcional, ej: salon.appliances.klitosan.com)")
+	hubFlag := fs.String("hub", getEnvOrDefault("HUB_URL", defaultHubURL), "URL base del Cloud Hub")
+	outFlag := fs.String("out", "ddns.txt", "Ruta para escribir el archivo drop-in ddns.txt generado")
+	noBrowser := fs.Bool("no-browser", false, "No abrir automáticamente el navegador web")
+
+	fs.Parse(args)
+
+	if *idFlag == "" {
+		fmt.Fprintln(os.Stderr, "❌ Error: El parámetro -id es obligatorio (ej: appliance-cli login -id nodo-salon).")
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	applianceID := strings.TrimSpace(*idFlag)
+	subdomain := strings.TrimSpace(*subdomainFlag)
+	if subdomain == "" {
+		subdomain = fmt.Sprintf("%s.%s", strings.ToLower(applianceID), defaultDomain)
+	}
+
+	hubURL := strings.TrimRight(*hubFlag, "/")
+	deviceCodeEndpoint := hubURL + "/api/v1/ddns/device-code"
+
+	fmt.Println("🌐 Solicitando autorización de dispositivo al Cloud Hub...")
+
+	reqBody, _ := json.Marshal(map[string]string{
+		"applianceId": applianceID,
+		"subdomain":   subdomain,
+	})
+
+	resp, err := http.Post(deviceCodeEndpoint, "application/json", bytes.NewBuffer(reqBody))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Error conectando con el Cloud Hub (%s): %v\n", deviceCodeEndpoint, err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		fmt.Fprintf(os.Stderr, "❌ Error iniciando flujo de autorización (HTTP %d): %s\n", resp.StatusCode, string(body))
+		os.Exit(1)
+	}
+
+	var dCodeResp struct {
+		DeviceCode              string `json:"device_code"`
+		UserCode                string `json:"user_code"`
+		VerificationURI         string `json:"verification_uri"`
+		VerificationURIComplete string `json:"verification_uri_complete"`
+		ExpiresIn               int    `json:"expires_in"`
+		Interval                int    `json:"interval"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&dCodeResp); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Error decodificando respuesta de autorización: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("\n==================================================================")
+	fmt.Println("             🔐 AUTORIZACIÓN VÍA WEB (DEVICE FLOW)               ")
+	fmt.Println("==================================================================")
+	fmt.Printf(" Appliance ID : %s\n", applianceID)
+	fmt.Printf(" Subdominio   : %s\n", subdomain)
+	fmt.Println("------------------------------------------------------------------")
+	fmt.Printf(" 1. Visita la URL: \033[1;36m%s\033[0m\n", dCodeResp.VerificationURIComplete)
+	fmt.Printf(" 2. Confirma el código: \033[1;33m%s\033[0m\n", dCodeResp.UserCode)
+	fmt.Println("==================================================================")
+
+	if !*noBrowser {
+		fmt.Println("🚀 Abriendo el navegador web automáticamente...")
+		openBrowser(dCodeResp.VerificationURIComplete)
+	}
+
+	fmt.Println("\n⏳ Esperando a que apruebes la autorización en la web...")
+
+	tokenEndpoint := hubURL + "/api/v1/ddns/device-token"
+	interval := time.Duration(dCodeResp.Interval) * time.Second
+	if interval < 2*time.Second {
+		interval = 2 * time.Second
+	}
+
+	deadline := time.Now().Add(time.Duration(dCodeResp.ExpiresIn) * time.Second)
+
+	for time.Now().Before(deadline) {
+		time.Sleep(interval)
+
+		pollBody, _ := json.Marshal(map[string]string{
+			"device_code": dCodeResp.DeviceCode,
+		})
+
+		pollResp, err := http.Post(tokenEndpoint, "application/json", bytes.NewBuffer(pollBody))
+		if err != nil {
+			continue
+		}
+
+		respBytes, _ := io.ReadAll(pollResp.Body)
+		pollResp.Body.Close()
+
+		if pollResp.StatusCode == http.StatusOK {
+			var tokenData struct {
+				ApplianceID string `json:"applianceId"`
+				Subdomain   string `json:"subdomain"`
+				SecretToken string `json:"secret_token"`
+			}
+			json.Unmarshal(respBytes, &tokenData)
+
+			fmt.Println("\n🎉 ¡Autorización completada con éxito desde la Web!")
+			fmt.Printf("   • Appliance ID : %s\n", tokenData.ApplianceID)
+			fmt.Printf("   • Subdominio   : %s\n", tokenData.Subdomain)
+			fmt.Printf("   • Token Secreto: %s (recibido y protegido)\n", tokenData.SecretToken)
+
+			if *outFlag != "" {
+				err := writeDropinFile(*outFlag, tokenData.ApplianceID, tokenData.SecretToken, hubURL)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "⚠️ Error guardando archivo drop-in: %v\n", err)
+				} else {
+					fmt.Printf("📄 Archivo drop-in generado: %s\n", *outFlag)
+				}
+			}
+			return
+		}
+
+		// Revisar si sigue pendiente o fue denegado/expirado
+		var errData struct {
+			Error            string `json:"error"`
+			ErrorDescription string `json:"error_description"`
+		}
+		json.Unmarshal(respBytes, &errData)
+
+		if errData.Error == "authorization_pending" {
+			fmt.Print(".")
+			continue
+		}
+
+		if errData.Error != "" {
+			fmt.Fprintf(os.Stderr, "\n❌ Autorización finalizada con error: %s (%s)\n", errData.Error, errData.ErrorDescription)
+			os.Exit(1)
+		}
+	}
+
+	fmt.Fprintln(os.Stderr, "\n⌛ Tiempo agotado: El código de dispositivo ha expirado.")
+	os.Exit(1)
 }
 
 func runRegister(args []string) {
@@ -155,7 +325,6 @@ func runRegister(args []string) {
 	fmt.Printf("   • Token Secreto: %s\n", token)
 	fmt.Printf("   • Cloud Hub    : %s\n", *hubFlag)
 
-	// Generar archivo drop-in si se especificó -out
 	if *outFlag != "" {
 		err := writeDropinFile(*outFlag, applianceID, token, *hubFlag)
 		if err != nil {
