@@ -254,7 +254,8 @@ func runCloudflareLogin(args []string) {
 	authParams.Set("response_type", "code")
 	authParams.Set("client_id", cloudflareOAuthClientID)
 	authParams.Set("redirect_uri", redirectURI)
-	authParams.Set("scope", "account:read user:read zone:read zone:edit dns:edit offline_access")
+	// Scopes oficiales autorizados para el client_id de Cloudflare CLI
+	authParams.Set("scope", "account:read user:read workers:write workers_kv:write workers_routes:write workers_scripts:write zone:read offline_access")
 	authParams.Set("state", state)
 	authParams.Set("code_challenge", challenge)
 	authParams.Set("code_challenge_method", "S256")
