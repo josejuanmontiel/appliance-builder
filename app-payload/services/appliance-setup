@@ -54,6 +54,23 @@ WPA_EOF
         fi
     fi
 
+    # 2c. Comprobar credenciales DDNS / Cloud Hub en la partición FAT32 (Drop-in ddns.txt)
+    # Formato: ID=casa \n TOKEN=secreto \n HUB=https://pingo-cloud.accreativos.com
+    if [ -f "$BOOT_FAT/ddns.txt" ]; then
+        DDNS_ID=$(grep -i '^ID=' "$BOOT_FAT/ddns.txt" | cut -d= -f2- | tr -d '\r"' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        DDNS_TOKEN=$(grep -i '^TOKEN=' "$BOOT_FAT/ddns.txt" | cut -d= -f2- | tr -d '\r"' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        DDNS_HUB=$(grep -i '^HUB=' "$BOOT_FAT/ddns.txt" | cut -d= -f2- | tr -d '\r"' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+        if [ -n "$DDNS_ID" ] && [ -n "$DDNS_TOKEN" ]; then
+            touch /etc/p2pt.env
+            sed -i '/^DDNS_/d' /etc/p2pt.env
+            echo "DDNS_APPLIANCE_ID=$DDNS_ID" >> /etc/p2pt.env
+            echo "DDNS_SECRET_TOKEN=$DDNS_TOKEN" >> /etc/p2pt.env
+            [ -n "$DDNS_HUB" ] && echo "DDNS_HUB_ENDPOINT=$DDNS_HUB" >> /etc/p2pt.env
+            einfo "Configuración Cloud Hub DDNS activada para appliance ID: $DDNS_ID"
+        fi
+    fi
+
     # 3. Comprobar configuración IP en la partición FAT32 (Drop-in ip.txt)
     if [ -f "$BOOT_FAT/ip.txt" ]; then
         einfo "Detectado $BOOT_FAT/ip.txt. Aplicando configuración IP estática..."
