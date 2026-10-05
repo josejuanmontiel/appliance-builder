@@ -48,31 +48,35 @@ func openBrowser(url string) {
 }
 
 func printUsage() {
-	fmt.Println(`Appliance Cloud Hub CLI — Herramienta de Gestión DDNS / ECH
+	fmt.Println(`Appliance Cloud Hub CLI — Herramienta de Gestión DDNS, ECH y Cloudflare DNS
 
 Uso:
   appliance-cli <comando> [opciones]
 
 Comandos disponibles:
-  login       Inicia sesión vía Web (OAuth 2.0 Device Flow RFC 8628) sin introducir tokens manuales
-  register    Registra o autoriza un appliance directamente con token manual o autogenerado
+  login       Inicia sesión vía Web (OAuth 2.0 Device Flow RFC 8628) sin tokens manuales
+  cf-dns      Crea o actualiza directamente un registro DNS (A o CNAME) en la API de Cloudflare
+  register    Registra o autoriza un appliance en el Cloud Hub (Cloudflare KV)
   heartbeat   Envía un latido de prueba para verificar conectividad y resolución ECH
   dropin      Genera o actualiza el archivo drop-in ddns.txt para tarjetas SD/FAT32
   help        Muestra esta ayuda
 
 Variables de entorno soportadas:
-  HUB_URL        URL del Cloud Hub (Por defecto: https://pingo-cloud.accreativos.com)
-  ADMIN_API_KEY  Clave de administración de Cloudflare Worker (opcional)
+  CLOUDFLARE_API_TOKEN   Token con permisos Zone.DNS:Edit para gestionar registros DNS
+  CLOUDFLARE_ZONE_ID     ID de la zona DNS en Cloudflare (ej. para klitosan.com)
+  HUB_URL                URL del Cloud Hub (Por defecto: https://pingo-cloud.accreativos.com)
+  ADMIN_API_KEY          Clave de administración de Cloudflare Worker (opcional)
 
 Ejemplos:
-  # Login interactivo mediante navegador (¡Recomendado!):
+  # 1. Crear subdominio directamente en Cloudflare DNS:
+  appliance-cli cf-dns -subdomain salon.appliances.klitosan.com -ip 1.2.3.4 -proxied
+  appliance-cli cf-dns -id oficina -ip 85.12.34.56
+
+  # 2. Login interactivo para aprovisionar appliance:
   appliance-cli login -id salon -out ./ddns.txt
 
-  # Registro directo:
-  appliance-cli register -id nodo-oficina -out ./ddns.txt
-
-  # Comprobación de conectividad:
-  appliance-cli heartbeat -id nodo-oficina -token <token>
+  # 3. Comprobación de heartbeat:
+  appliance-cli heartbeat -id salon -token <token>
 `)
 }
 
@@ -84,6 +88,8 @@ func main() {
 
 	command := os.Args[1]
 	switch command {
+	case "cf-dns":
+		runCloudflareDNS(os.Args[2:])
 	case "login":
 		runLogin(os.Args[2:])
 	case "register":
@@ -107,6 +113,233 @@ func getEnvOrDefault(envKey, defVal string) string {
 		return v
 	}
 	return defVal
+}
+
+// runCloudflareDNS permite gestionar directamente registros DNS en Cloudflare sin intermediarios
+func runCloudflareDNS(args []string) {
+	fs := flag.NewFlagSet("cf-dns", flag.ExitOnError)
+	idFlag := fs.String("id", "", "ID del appliance (se usará como <id>.appliances.klitosan.com si no se especifica -subdomain)")
+	subdomainFlag := fs.String("subdomain", "", "FQDN completo del registro DNS (ej: salon.appliances.klitosan.com)")
+	ipFlag := fs.String("ip", "", "Dirección IP pública para el registro A (si se omite, se detectará la IP pública actual)")
+	proxiedFlag := fs.Bool("proxied", true, "Habilitar proxy CDN de Cloudflare (activa ECH / TLS automático)")
+	cfTokenFlag := fs.String("token", os.Getenv("CLOUDFLARE_API_TOKEN"), "Cloudflare API Token (o variable CLOUDFLARE_API_TOKEN)")
+	zoneIDFlag := fs.String("zone", os.Getenv("CLOUDFLARE_ZONE_ID"), "Cloudflare Zone ID (o variable CLOUDFLARE_ZONE_ID)")
+
+	fs.Parse(args)
+
+	cfToken := strings.TrimSpace(*cfTokenFlag)
+	if cfToken == "" {
+		fmt.Fprintln(os.Stderr, "❌ Error: Se requiere CLOUDFLARE_API_TOKEN (-token o variable de entorno).")
+		os.Exit(1)
+	}
+
+	subdomain := strings.TrimSpace(*subdomainFlag)
+	if subdomain == "" {
+		if *idFlag != "" {
+			subdomain = fmt.Sprintf("%s.%s", strings.ToLower(strings.TrimSpace(*idFlag)), defaultDomain)
+		} else {
+			fmt.Fprintln(os.Stderr, "❌ Error: Especifica -subdomain o -id.")
+			os.Exit(1)
+		}
+	}
+
+	zoneID := strings.TrimSpace(*zoneIDFlag)
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	// 1. Si no se pasa Zone ID, buscarlo automáticamente a través de la API
+	if zoneID == "" {
+		fmt.Println("🔍 Buscando Zone ID para el dominio en Cloudflare...")
+		detectedZoneID, err := detectZoneID(client, cfToken, subdomain)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Error localizando Zone ID: %v\n", err)
+			os.Exit(1)
+		}
+		zoneID = detectedZoneID
+		fmt.Printf("   • Zone ID detectado: %s\n", zoneID)
+	}
+
+	// 2. Determinar IP pública (si no se suministró)
+	targetIP := strings.TrimSpace(*ipFlag)
+	if targetIP == "" {
+		fmt.Println("🌐 Detectando IP pública de esta conexión...")
+		publicIP, err := detectPublicIP(client)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Error obteniendo IP pública actual: %v. Especifica -ip manualmente.\n", err)
+			os.Exit(1)
+		}
+		targetIP = publicIP
+		fmt.Printf("   • IP WAN detectada: %s\n", targetIP)
+	}
+
+	// 3. Comprobar si el registro DNS ya existe en la zona
+	fmt.Printf("🔍 Consultando registros DNS existentes para '%s'...\n", subdomain)
+	existingRecordID, err := findDNSRecord(client, cfToken, zoneID, subdomain)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Error consultando DNS de Cloudflare: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 4. Crear o Actualizar el registro DNS
+	dnsPayload := map[string]any{
+		"type":    "A",
+		"name":    subdomain,
+		"content": targetIP,
+		"ttl":     1, // Auto
+		"proxied": *proxiedFlag,
+	}
+	payloadBytes, _ := json.Marshal(dnsPayload)
+
+	var apiURL, httpMethod string
+	if existingRecordID == "" {
+		apiURL = fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records", zoneID)
+		httpMethod = http.MethodPost
+		fmt.Printf("➕ Creando nuevo registro DNS A -> %s en Cloudflare...\n", subdomain)
+	} else {
+		apiURL = fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records/%s", zoneID, existingRecordID)
+		httpMethod = http.MethodPut
+		fmt.Printf("🔄 Actualizando registro DNS existente (%s) -> %s...\n", existingRecordID, subdomain)
+	}
+
+	req, _ := http.NewRequest(httpMethod, apiURL, bytes.NewBuffer(payloadBytes))
+	req.Header.Set("Authorization", "Bearer "+cfToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Error conectando con API de Cloudflare: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	var cfResp struct {
+		Success bool `json:"success"`
+		Errors  []struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"errors"`
+		Result struct {
+			ID      string `json:"id"`
+			Name    string `json:"name"`
+			Content string `json:"content"`
+			Proxied bool   `json:"proxied"`
+		} `json:"result"`
+	}
+	json.Unmarshal(bodyBytes, &cfResp)
+
+	if !cfResp.Success {
+		var errMsgs []string
+		for _, e := range cfResp.Errors {
+			errMsgs = append(errMsgs, fmt.Sprintf("[%d] %s", e.Code, e.Message))
+		}
+		fmt.Fprintf(os.Stderr, "❌ Cloudflare API Error: %s\n", strings.Join(errMsgs, ", "))
+		os.Exit(1)
+	}
+
+	fmt.Println("\n🎉 ¡Subdominio configurado con éxito en Cloudflare DNS!")
+	fmt.Printf("   • Subdominio  : %s\n", cfResp.Result.Name)
+	fmt.Printf("   • Dirección IP: %s\n", cfResp.Result.Content)
+	fmt.Printf("   • Proxied     : %v\n", cfResp.Result.Proxied)
+	if cfResp.Result.Proxied {
+		fmt.Println("   • ECH Ready   : ✅ Sí (TLS y Proxy Cloudflare activos)")
+	}
+	fmt.Printf("   • DNS RecordID: %s\n", cfResp.Result.ID)
+}
+
+func detectZoneID(client *http.Client, token, subdomain string) (string, error) {
+	req, _ := http.NewRequest(http.MethodGet, "https://api.cloudflare.com/client/v4/zones?status=active", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var zonesResp struct {
+		Success bool `json:"success"`
+		Result  []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&zonesResp); err != nil {
+		return "", err
+	}
+
+	// Buscar la zona que coincida con el sufijo del subdominio
+	for _, z := range zonesResp.Result {
+		if strings.HasSuffix(subdomain, z.Name) {
+			return z.ID, nil
+		}
+	}
+
+	if len(zonesResp.Result) > 0 {
+		return zonesResp.Result[0].ID, nil
+	}
+	return "", fmt.Errorf("no se encontraron zonas DNS asociadas a este token")
+}
+
+func detectPublicIP(client *http.Client) (string, error) {
+	endpoints := []string{
+		"https://api.ipify.org",
+		"https://icanhazip.com",
+		"https://cloudflare.com/cdn-cgi/trace",
+	}
+
+	for _, ep := range endpoints {
+		resp, err := client.Get(ep)
+		if err != nil {
+			continue
+		}
+		b, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err == nil {
+			str := string(b)
+			if strings.Contains(ep, "trace") {
+				for _, line := range strings.Split(str, "\n") {
+					if strings.HasPrefix(line, "ip=") {
+						return strings.TrimPrefix(line, "ip="), nil
+					}
+				}
+			} else {
+				ip := strings.TrimSpace(str)
+				if ip != "" {
+					return ip, nil
+				}
+			}
+		}
+	}
+	return "", fmt.Errorf("no se pudo determinar la IP pública")
+}
+
+func findDNSRecord(client *http.Client, token, zoneID, name string) (string, error) {
+	url := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records?name=%s&type=A", zoneID, name)
+	req, _ := http.NewRequest(http.MethodGet, url, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var listResp struct {
+		Success bool `json:"success"`
+		Result  []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&listResp); err != nil {
+		return "", err
+	}
+
+	for _, r := range listResp.Result {
+		if strings.EqualFold(r.Name, name) {
+			return r.ID, nil
+		}
+	}
+	return "", nil
 }
 
 func runLogin(args []string) {
@@ -231,7 +464,6 @@ func runLogin(args []string) {
 			return
 		}
 
-		// Revisar si sigue pendiente o fue denegado/expirado
 		var errData struct {
 			Error            string `json:"error"`
 			ErrorDescription string `json:"error_description"`
