@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 BUILDER_DIR="$(dirname "$SCRIPT_DIR")"
 OUTPUT_DIR="${BUILDER_DIR}/output"
 
-TARBALL="${1:-$(ls "${OUTPUT_DIR}"/*.tar.gz 2>/dev/null | head -n 1)}"
+TARBALL="${1:-$(ls "${OUTPUT_DIR}"/*-box-rpi-zero.tar.gz 2>/dev/null | head -n 1)}"
 
 if [ -z "$TARBALL" ] || [ ! -f "$TARBALL" ]; then
     echo "Error: No se encontró ningún tarball en ${OUTPUT_DIR}/"
@@ -65,28 +65,47 @@ docker exec "$CONTAINER_NAME" sh -c "
     
     echo '  [3/4] Instalando paquetes APK offline...'
     apk add --allow-untrusted /media/mmcblk0p1/apks/armhf/*.apk >/dev/null 2>&1 || true
-    
     echo '  [4/4] Inicializando entorno OpenRC...'
     mkdir -p /run/openrc /var/log
     touch /run/openrc/softlevel
 "
 
+# Inyectar ddns.txt si existe localmente
+if [ -f "$BUILDER_DIR/ddns.txt" ]; then
+    echo "  [+] Inyectando drop-in ddns.txt en /media/mmcblk0p1/..."
+    docker cp "$BUILDER_DIR/ddns.txt" "${CONTAINER_NAME}:/media/mmcblk0p1/ddns.txt"
+fi
+
 echo ">> Ejecutando script de arranque y persistencia..."
 docker exec "$CONTAINER_NAME" /bin/sh -c '
-    /etc/init.d/appliance-setup start 2>/dev/null || true
-    if [ -f /etc/init.d/vericool-setup ]; then
-        /etc/init.d/vericool-setup start 2>/dev/null || true
+    BOOT_FAT="/media/mmcblk0p1"
+    if [ -f "$BOOT_FAT/ddns.txt" ]; then
+        echo "Leyendo $BOOT_FAT/ddns.txt..."
+        DDNS_ID=$(grep -i "^ID=" "$BOOT_FAT/ddns.txt" | cut -d= -f2- | tr -d "\r\"" | sed "s/^[[:space:]]*//;s/[[:space:]]*$//")
+        DDNS_TOKEN=$(grep -i "^TOKEN=" "$BOOT_FAT/ddns.txt" | cut -d= -f2- | tr -d "\r\"" | sed "s/^[[:space:]]*//;s/[[:space:]]*$//")
+        DDNS_HUB=$(grep -i "^HUB=" "$BOOT_FAT/ddns.txt" | cut -d= -f2- | tr -d "\r\"" | sed "s/^[[:space:]]*//;s/[[:space:]]*$//")
+        touch /etc/p2pt.env
+        sed -i "/^DDNS_/d" /etc/p2pt.env
+        echo "DDNS_APPLIANCE_ID=$DDNS_ID" >> /etc/p2pt.env
+        echo "DDNS_SECRET_TOKEN=$DDNS_TOKEN" >> /etc/p2pt.env
+        [ -n "$DDNS_HUB" ] && echo "DDNS_HUB_ENDPOINT=$DDNS_HUB" >> /etc/p2pt.env
+        echo "Configurado DDNS para $DDNS_ID en /etc/p2pt.env"
     fi
 '
 
-echo ">> Iniciando servicios OpenRC del payload..."
+# Inyectar binario p2pt-server actualizado si existe
+if [ -f "$BUILDER_DIR/app-payload/bin/p2pt-server" ]; then
+    echo "  [+] Inyectando binario ARM p2pt-server actualizado..."
+    docker cp "$BUILDER_DIR/app-payload/bin/p2pt-server" "${CONTAINER_NAME}:/usr/bin/p2pt-server"
+    docker exec "$CONTAINER_NAME" chmod +x /usr/bin/p2pt-server
+fi
+
+echo ">> Iniciando servicio p2pt..."
 docker exec "$CONTAINER_NAME" /bin/sh -c '
-    for svc in postgresql mosquitto dex immudb gotosocial p2pt vericool nginx; do
-        if [ -f "/etc/init.d/$svc" ]; then
-            echo "  -> Levantando $svc..."
-            /etc/init.d/$svc start || true
-        fi
-    done
+    set -a
+    [ -f /etc/p2pt.env ] && source /etc/p2pt.env
+    set +a
+    /usr/bin/p2pt-server &
 '
 
 sleep 8
@@ -97,10 +116,11 @@ echo "============================================================"
 docker exec "$CONTAINER_NAME" ps aux
 
 echo -e "\n============================================================"
-echo "  Probando Endpoints HTTP/HTTPS:                            "
+echo "  Logs de p2pt y appliance-setup:                           "
 echo "============================================================"
-docker exec "$CONTAINER_NAME" curl -k -s -o /dev/null -w "Port 443 (HTTPS) Status: %{http_code}\n" https://127.0.0.1:443/ || echo "Servicio no escuchando en :443 HTTPS"
-docker exec "$CONTAINER_NAME" curl -s -o /dev/null -w "Port 80 (HTTP Redirect) Status: %{http_code}\n" http://127.0.0.1:80/ || echo "Puerto 80 no activo"
-docker exec "$CONTAINER_NAME" curl -k -s -o /dev/null -w "Port 9000 (HTTP Fallback) Status: %{http_code}\n" http://127.0.0.1:9000/ || true
+docker exec "$CONTAINER_NAME" cat /media/mmcblk0p1/logs/p2pt.log 2>/dev/null || true
+docker exec "$CONTAINER_NAME" cat /var/log/p2pt.log 2>/dev/null || true
+docker exec "$CONTAINER_NAME" cat /var/log/p2pt.err 2>/dev/null || true
+docker exec "$CONTAINER_NAME" cat /etc/p2pt.env 2>/dev/null || true
 
 echo -e "\n✔ Simulación completada."
