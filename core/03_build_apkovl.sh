@@ -197,17 +197,26 @@ if [ -n "${PAYLOAD_DIR}" ] && [ "${PAYLOAD_DIR}" != "/" ] && [ -d "${PAYLOAD_DIR
     done
 fi
 
-# 8d. Desempaquetar paquetes APK personalizados desde work/custom-apks/
+# 8d. Desempaquetar paquetes APK offline/personalizados en apkovl
+# Incluye paquetes de work/custom-apks/ y work/extra-pkgs-${ALPINE_ARCH}/
+PACKAGES_TO_EXTRACT=()
 CUSTOM_APKS_DIR="${WORKDIR}/custom-apks"
-if [ -d "$CUSTOM_APKS_DIR" ] && [ "$(ls -A "$CUSTOM_APKS_DIR" 2>/dev/null)" ]; then
-    echo "  Desempaquetando paquetes APK personalizados en apkovl:"
-    for apk in "$CUSTOM_APKS_DIR"/*.apk; do
-        if [ -f "$apk" ]; then
-            echo "    -> $(basename "$apk")"
-            tar -xzf "$apk" -C "$TMP" --exclude='.PKGINFO' --exclude='.SIGN.*' 2>/dev/null || tar -xzf "$apk" -C "$TMP"
-        fi
+EXTRA_PKGS_DIR="${WORKDIR}/extra-pkgs-${ALPINE_ARCH:-armhf}"
+
+[ -d "$CUSTOM_APKS_DIR" ] && for a in "$CUSTOM_APKS_DIR"/*.apk; do [ -f "$a" ] && PACKAGES_TO_EXTRACT+=("$a"); done
+[ -d "$EXTRA_PKGS_DIR" ] && for a in "$EXTRA_PKGS_DIR"/*.apk; do [ -f "$a" ] && PACKAGES_TO_EXTRACT+=("$a"); done
+
+if [ ${#PACKAGES_TO_EXTRACT[@]} -gt 0 ]; then
+    echo "  Desempaquetando paquetes APK offline en apkovl (${#PACKAGES_TO_EXTRACT[@]} paquetes):"
+    for apk in "${PACKAGES_TO_EXTRACT[@]}"; do
+        echo "    -> $(basename "$apk")"
+        tar -xzf "$apk" -C "$TMP" --exclude='.PKGINFO' --exclude='.SIGN.*' 2>/dev/null || tar -xzf "$apk" -C "$TMP"
     done
 fi
+
+# Eliminar /etc/init.d/hostapd por defecto para que no arranque la red genérica de Alpine (ssid=test)
+# hostapd se ejecuta exclusivamente bajo control del servicio wifi-fallback
+rm -f "$TMP"/etc/init.d/hostapd "$TMP"/etc/runlevels/*/hostapd 2>/dev/null || true
 
 # Re-aplicar overrides de payload/services y payload/etc para asegurar que prevalecen sobre APKs empaquetados
 if [ -n "${PAYLOAD_DIR}" ] && [ "${PAYLOAD_DIR}" != "/" ]; then
@@ -224,7 +233,7 @@ for svc in "$TMP"/etc/init.d/*; do
     [ -f "$svc" ] || continue
     svc_name=$(basename "$svc")
     case "$svc_name" in
-        appliance-setup|networking|wpa_supplicant|modloop|hwdrivers|devfs|dmesg|mdev|bootmisc|hostname|syslog|swap)
+        appliance-setup|networking|wpa_supplicant|modloop|hwdrivers|devfs|dmesg|mdev|bootmisc|hostname|syslog|swap|hostapd|dnsmasq)
             ;;
         *)
             chmod 755 "$svc" 2>/dev/null || true

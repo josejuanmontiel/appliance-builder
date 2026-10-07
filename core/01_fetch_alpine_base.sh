@@ -58,12 +58,22 @@ if [ -f "$EXTRA_APKS_FILE" ]; then
         EXTRA_PKGS_DIR="${WORKDIR}/extra-pkgs-${ALPINE_ARCH}"
         rm -rf "${EXTRA_PKGS_DIR}"
         mkdir -p "${EXTRA_PKGS_DIR}"
-        apk.static --arch "$ALPINE_ARCH" \
-            -X "${ALPINE_MIRROR}/${ALPINE_BRANCH}/main" \
-            -X "${ALPINE_MIRROR}/${ALPINE_BRANCH}/community" \
+
+        # Configurar repositorio temporal para descargar paquetes con dependencias
+        mkdir -p "${TEMP_ROOTFS}/etc/apk"
+        echo "${ALPINE_MIRROR}/${ALPINE_BRANCH}/main" > "${TEMP_ROOTFS}/etc/apk/repositories"
+        echo "${ALPINE_MIRROR}/${ALPINE_BRANCH}/community" >> "${TEMP_ROOTFS}/etc/apk/repositories"
+
+        apk.static add --arch "$ALPINE_ARCH" \
             --root "${TEMP_ROOTFS}" \
-            --initdb \
-            fetch \
+            --keys-dir /etc/apk/keys \
+            --allow-untrusted \
+            --initdb >/dev/null 2>&1 || true
+
+        apk.static fetch --arch "$ALPINE_ARCH" \
+            --root "${TEMP_ROOTFS}" \
+            --keys-dir /etc/apk/keys \
+            --allow-untrusted \
             --output "${EXTRA_PKGS_DIR}" \
             --recursive \
             ${EXTRA_PKGS} >/dev/null 2>&1 || true
