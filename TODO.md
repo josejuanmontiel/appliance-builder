@@ -78,3 +78,13 @@ Si la Raspberry Pi arranca y no consigue asociarse a ninguna red WiFi tras 25 se
 
 - [ ] Añadir perfiles de kernel/dtb para **Raspberry Pi 4 / Pi 5 (ARM64 / aarch64)**
 - [ ] Añadir perfil para **x86_64 UEFI** (Appliance en Mini PC / Servidores locales)
+
+---
+
+## 5. 🔄 Actualizaciones OTA bajo demanda
+
+### Objetivo
+Añadir soporte en el servidor y panel web para disparar la comprobación y aplicación de actualizaciones en caliente bajo demanda, sin tener que esperar al ciclo periódico de 12 horas ni reiniciar el appliance.
+
+- [ ] Endpoint `/api/updater/check` en `p2pt-server` (con autenticación de administrador).
+- [ ] Botón "🔄 Comprobar Actualización Ahora" en el Dashboard web con feedback de estado (versión actual vs disponible, progreso de descarga y reinicio).
