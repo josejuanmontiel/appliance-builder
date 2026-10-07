@@ -3,4 +3,4 @@
 # ==============================================================================
 
 # Argumentos pasados al binario p2pt-server
-P2PT_OPTS="-port 443 -turn-port 3478 -upnp -mastodon -public-ip pingo-casa.duckdns.org"
+P2PT_OPTS="-port 443 -turn-port 3478 -upnp -public-ip pingo-casa.duckdns.org"

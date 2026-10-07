@@ -24,13 +24,12 @@ packages:
 
   # Paquetes APK personalizados (rutas locales o URLs https://):
   apks:
-    - "/home/jose/workspace/estoyqueloleo/p2pt-server/dist/p2pt-server_1.4.0_armhf.apk"
+    - "/home/jose/workspace/estoyqueloleo/p2pt-server/dist/p2pt-server_1.4.1_armhf.apk"
 
 services:
   # Servicios OpenRC a habilitar automáticamente en runlevel default:
   enable:
     - p2pt
-    - gotosocial
 
 network:
   ip: "192.168.1.50"
