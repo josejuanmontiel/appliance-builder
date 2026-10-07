@@ -34,7 +34,7 @@ mkdir -p "$TMP"/etc/network \
          "$TMP"/media/mmcblk0p1
 
 # 2. Hostname y Resolución DNS
-echo "${HOSTNAME:-p2pt-box}" > "$TMP"/etc/hostname
+echo "${HOSTNAME:-appliance-box}" > "$TMP"/etc/hostname
 
 # 2b. Password de root (default: 'alpine')
 ROOT_PASSWORD="${ROOT_PASSWORD:-alpine}"
@@ -45,16 +45,18 @@ printf 'root:%s:0:0:99999:7:::\n' "$ROOT_HASH" > "$TMP"/etc/shadow
 chmod 640 "$TMP"/etc/shadow
 echo "  root password configurado."
 
-# 2c. Configuración inicial P2PT / Dashboard
-ADMIN_PASSWORD="${ADMIN_PASSWORD:-alpine}"
-cat <<EOF > "$TMP"/etc/p2pt.env
+# 2c. Configuración inicial si el payload define p2pt.env.example
+if [ -f "${PAYLOAD_DIR}/config/p2pt.env.example" ] && [ ! -f "$TMP/etc/p2pt.env" ]; then
+    ADMIN_PASSWORD="${ADMIN_PASSWORD:-alpine}"
+    cat <<EOF > "$TMP"/etc/p2pt.env
 PORT=${P2PT_PORT:-443}
 TURN_PORT=${TURN_PORT:-3478}
 ADMIN_PASSWORD=${ADMIN_PASSWORD}
 ALLOW_WAN_DASHBOARD=true
 EOF
-chmod 600 "$TMP"/etc/p2pt.env
-echo "  p2pt.env inicial configurado."
+    chmod 600 "$TMP"/etc/p2pt.env
+    echo "  p2pt.env inicial configurado desde plantilla del payload."
+fi
 
 # 2d. Configuración SSH
 cat <<EOF > "$TMP"/etc/ssh/sshd_config
@@ -68,9 +70,9 @@ EOF
 chmod 600 "$TMP"/etc/ssh/sshd_config
 
 cat <<EOF > "$TMP"/etc/hosts
-127.0.0.1   localhost localhost.localdomain ${HOSTNAME:-p2pt-box}
-::1         localhost localhost.localdomain ${HOSTNAME:-p2pt-box}
-${STATIC_IP:-192.168.1.50}  ${HOSTNAME:-p2pt-box}
+127.0.0.1   localhost localhost.localdomain ${HOSTNAME:-appliance-box}
+::1         localhost localhost.localdomain ${HOSTNAME:-appliance-box}
+${STATIC_IP:-192.168.1.50}  ${HOSTNAME:-appliance-box}
 EOF
 
 cat <<EOF > "$TMP"/etc/resolv.conf

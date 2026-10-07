@@ -9,7 +9,21 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 BUILDER_DIR="$(dirname "$SCRIPT_DIR")"
 OUTPUT_DIR="${BUILDER_DIR}/output"
 
-TARBALL="${1:-$(ls "${OUTPUT_DIR}"/*-box-rpi-zero.tar.gz 2>/dev/null | head -n 1)}"
+USE_LAN_IP=0
+KEEP_ALIVE=0
+TARBALL=""
+
+for arg in "$@"; do
+    case "$arg" in
+        --lan) USE_LAN_IP=1 ;;
+        --keep) KEEP_ALIVE=1 ;;
+        *) [ -f "$arg" ] && TARBALL="$arg" ;;
+    esac
+done
+
+if [ -z "$TARBALL" ]; then
+    TARBALL="$(ls "${OUTPUT_DIR}"/*-box-rpi-zero.tar.gz 2>/dev/null | head -n 1)"
+fi
 
 if [ -z "$TARBALL" ] || [ ! -f "$TARBALL" ]; then
     echo "Error: No se encontró ningún tarball en ${OUTPUT_DIR}/"
@@ -28,14 +42,25 @@ docker run --rm --privileged multiarch/qemu-user-static --reset -p yes >/dev/nul
 CONTAINER_NAME="alpine-appliance-sim-$$"
 
 echo ">> Preparando contenedor de simulación..."
-docker run --name "$CONTAINER_NAME" -d \
-    --privileged \
-    -p 8443:443 \
-    -p 9000:9000 \
-    -p 3478:3478/udp \
-    --platform linux/arm/v6 \
-    alpine:3.19 \
-    tail -f /dev/null
+if [ "${USE_LAN_IP:-0}" = "1" ] || [ "${1}" = "--lan" ] || [ "${2}" = "--lan" ]; then
+    echo "  [+] Conectando a red lan-br0 con IP fija 192.168.1.50..."
+    docker run --name "$CONTAINER_NAME" -d \
+        --privileged \
+        --net lan-br0 \
+        --ip 192.168.1.50 \
+        --platform linux/arm/v6 \
+        alpine:3.19 \
+        tail -f /dev/null
+else
+    docker run --name "$CONTAINER_NAME" -d \
+        --privileged \
+        -p 8443:443 \
+        -p 9000:9000 \
+        -p 3478:3478/udp \
+        --platform linux/arm/v6 \
+        alpine:3.19 \
+        tail -f /dev/null
+fi
 
 cleanup() {
     echo ">> Deteniendo simulador..."
@@ -101,11 +126,11 @@ if [ -f "$BUILDER_DIR/app-payload/bin/p2pt-server" ]; then
 fi
 
 echo ">> Iniciando servicio p2pt..."
-docker exec "$CONTAINER_NAME" /bin/sh -c '
+docker exec -d "$CONTAINER_NAME" /bin/sh -c '
     set -a
     [ -f /etc/p2pt.env ] && source /etc/p2pt.env
     set +a
-    /usr/bin/p2pt-server &
+    nohup /usr/bin/p2pt-server > /media/mmcblk0p1/logs/p2pt.log 2>&1
 '
 
 sleep 8
@@ -123,4 +148,10 @@ docker exec "$CONTAINER_NAME" cat /var/log/p2pt.log 2>/dev/null || true
 docker exec "$CONTAINER_NAME" cat /var/log/p2pt.err 2>/dev/null || true
 docker exec "$CONTAINER_NAME" cat /etc/p2pt.env 2>/dev/null || true
 
-echo -e "\n✔ Simulación completada."
+if [ "${KEEP_ALIVE:-0}" = "1" ] || [ "${1}" = "--keep" ] || [ "${2}" = "--keep" ] || [ "${3}" = "--keep" ]; then
+    echo -e "\n🟢 Contenedor mantenido en ejecución ($CONTAINER_NAME en IP 192.168.1.50)."
+    echo "Para detenerlo: docker rm -f $CONTAINER_NAME"
+    trap - EXIT
+else
+    echo -e "\n✔ Simulación completada."
+fi
