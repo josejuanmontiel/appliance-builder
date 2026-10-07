@@ -56,6 +56,7 @@ if [ -f "$EXTRA_APKS_FILE" ]; then
         # el boot diskless pueda instalar alpine-base. Si lo regeneramos sin firmar,
         # APK no puede instalar la base del sistema y /sbin/init nunca se crea.
         EXTRA_PKGS_DIR="${WORKDIR}/extra-pkgs-${ALPINE_ARCH}"
+        rm -rf "${EXTRA_PKGS_DIR}"
         mkdir -p "${EXTRA_PKGS_DIR}"
         apk.static --arch "$ALPINE_ARCH" \
             -X "${ALPINE_MIRROR}/${ALPINE_BRANCH}/main" \

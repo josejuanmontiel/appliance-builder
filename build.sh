@@ -17,8 +17,8 @@ PAYLOAD_CONFIG="${PAYLOAD_DIR}/config/wifi.env"
 
 # Cargar configuraciones base
 [ -f "$CONFIG_FILE" ] && source "$CONFIG_FILE"
-[ -f "$PAYLOAD_CONFIG" ] && source "$PAYLOAD_CONFIG"
-
+# Limpiar y aislar directorios de trabajo para evitar residuos de builds anteriores
+rm -rf "${CUSTOM_APKS_DIR}" "${WORK_DIR}/recipe.env" "${WORK_DIR}/extra-apks.txt" "${WORK_DIR}/extra-pkgs"*
 mkdir -p "${WORK_DIR}" "${OUTPUT_DIR}" "${CACHE_DIR}" "${CUSTOM_APKS_DIR}"
 
 # Parsear argumentos de línea de comandos
@@ -170,6 +170,11 @@ for item in apk_list:
 EOF
 
     [ -f "${WORK_DIR}/recipe.env" ] && source "${WORK_DIR}/recipe.env"
+else
+    # Si no se pasó receta declarativa, copiar paquetes extra del payload si existen
+    if [ -f "${PAYLOAD_DIR}/config/extra-apks.txt" ]; then
+        cp "${PAYLOAD_DIR}/config/extra-apks.txt" "${WORK_DIR}/extra-apks.txt"
+    fi
 fi
 
 # Procesar APKs pasados por CLI
